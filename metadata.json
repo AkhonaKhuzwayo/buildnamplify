@@ -1,0 +1,9 @@
+{
+  "name": "BnA Campaign Management System",
+  "description": "A full-stack campaign management system for officials, guest employees, and admins, featuring real-time monitoring, clock-ins, and bulk activations.",
+  "requestFramePermissions": [
+    "geolocation",
+    "camera"
+  ],
+  "majorCapabilities": []
+}

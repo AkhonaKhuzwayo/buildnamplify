@@ -1,0 +1,85 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "System user with role-based access",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "official", "guest"] },
+        "campaignId": { "type": "string", "description": "Assigned campaign for guest employees" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "Campaign": {
+      "title": "Campaign",
+      "description": "A specific campaign that officials and guests work on",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "status"]
+    },
+    "ClockIn": {
+      "title": "ClockIn",
+      "description": "Attendance record for an employee",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "campaignId": { "type": "string" },
+        "type": { "type": "string", "enum": ["in", "out"] },
+        "location": { "type": "string", "enum": ["DUT", "UKZN", "MUT"] },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "coordinates": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" }
+          }
+        }
+      },
+      "required": ["userId", "campaignId", "type", "location", "timestamp"]
+    },
+    "Activation": {
+      "title": "Activation",
+      "description": "Bulk activation record with customer data and photos",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "campaignId": { "type": "string" },
+        "firstName": { "type": "string" },
+        "surname": { "type": "string" },
+        "idNumber": { "type": "string" },
+        "photos": { "type": "array", "items": { "type": "string" } },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "campaignId", "firstName", "surname", "idNumber", "timestamp"]
+    },
+    "Document": {
+      "title": "Document",
+      "description": "Employee profile documents",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "type": { "type": "string", "enum": ["ID", "Bank Proof", "Residence", "Contract"] },
+        "url": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "type", "url", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/profiles/{userId}": { "schema": "User", "description": "Stores user profiles and roles" },
+    "/campaigns/{campaignId}": { "schema": "Campaign", "description": "Campaign definitions" },
+    "/clock-ins/{clockInId}": { "schema": "ClockIn", "description": "Employee clock-ins" },
+    "/activations/{activationId}": { "schema": "Activation", "description": "Campaign activations" },
+    "/documents/{docId}": { "schema": "Document", "description": "Employee documents" }
+  }
+}

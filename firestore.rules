@@ -1,0 +1,127 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function getUserData() {
+      return get(/databases/$(database)/documents/profiles/$(request.auth.uid));
+    }
+    
+    function hasRole(role) {
+      return isSignedIn() && 
+             exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && 
+             getUserData().data.get('role', 'none') == role;
+    }
+    
+    function isAdmin() {
+      return hasRole('admin');
+    }
+    
+    function isOfficial() {
+      return hasRole('official');
+    }
+    
+    function isGuest() {
+      return hasRole('guest');
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isActivationCollection(name) {
+      return name == 'activations' ||
+             name == 'activations_spot' ||
+             name == 'activations_gumtree';
+    }
+
+    // --- Profiles ---
+    match /profiles/{userId} {
+      // Direct access for self
+      allow read, update: if isSignedIn() && request.auth.uid == userId;
+      
+      // Allow creation for self (registration)
+      allow create: if isSignedIn() && request.auth.uid == userId;
+
+      // Admin/Official elevated access
+      allow read: if isSignedIn() && (isAdmin() || isOfficial());
+      allow update, delete: if isAdmin();
+    }
+
+    // --- Campaigns ---
+    match /campaigns/{campaignId} {
+      allow read: if isSignedIn();
+      // Temporarily allow write for initialization - will tighten back to isAdmin() after setup
+      allow write: if isSignedIn();
+    }
+
+    // --- Clock-ins ---
+    match /clock-ins/{clockInId} {
+      function isValidClockIn(data) {
+        return data.userId == request.auth.uid &&
+               data.campaignId is string &&
+               data.type in ['in', 'out'] &&
+               data.location in ['DUT', 'UKZN', 'MUT'] &&
+               data.timestamp == request.time;
+      }
+
+      allow create: if (isOfficial() || isGuest()) && isValidClockIn(request.resource.data);
+      allow read: if isAdmin() || isOfficial() || (isGuest() && resource.data.userId == request.auth.uid);
+    }
+
+    // --- Activations ---
+    match /{activationCollection}/{activationId} {
+      function isValidActivation(data) {
+        return data.userId == request.auth.uid &&
+               data.campaignId is string &&
+               (
+                 !('submissionDateKey' in data) ||
+                 (
+                   data.submissionDateKey is string &&
+                   data.submissionDateKey.matches('^\\d{4}-\\d{2}-\\d{2}$')
+                 )
+               ) &&
+               data.firstName is string && data.firstName.size() <= 100 &&
+               data.surname is string && data.surname.size() <= 100 &&
+               (
+                 (
+                   data.idNumber is string && data.idNumber.size() == 13 && data.idNumber.matches('^\\d{13}$') &&
+                   data.activationType in ['card-only', 'card-sim'] &&
+                   data.rate is number &&
+                   data.prizePhoto is string && data.prizePhoto.size() > 0 &&
+                   data.summaryPhoto is string && data.summaryPhoto.size() > 0
+                 ) ||
+                 (
+                   data.idNumber is string && data.idNumber.size() == 13 &&
+                   data.photos is list && data.photos.size() <= 10
+                 )
+               ) &&
+               data.timestamp == request.time;
+      }
+
+      allow create: if isActivationCollection(activationCollection) && (isOfficial() || isGuest()) && isValidActivation(request.resource.data);
+      allow read: if isActivationCollection(activationCollection) && (isAdmin() || isOfficial() || (isGuest() && resource.data.userId == request.auth.uid));
+    }
+
+    // --- Documents ---
+    match /documents/{docId} {
+      function isValidDoc(data) {
+        return data.userId == request.auth.uid &&
+               data.type in ['ID', 'Bank Proof', 'Residence', 'Contract'] &&
+               data.url is string &&
+               data.timestamp == request.time;
+      }
+
+      allow create: if isSignedIn() && isValidDoc(request.resource.data);
+      allow read: if isAdmin() || isOfficial() || (resource.data.userId == request.auth.uid);
+    }
+  }
+}

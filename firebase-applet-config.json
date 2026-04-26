@@ -1,0 +1,10 @@
+{
+  "projectId": "bna-system-prod",
+  "appId": "1:74978651906:web:f18fd0ca1f294e5ed25c1b",
+  "apiKey": "AIzaSyBP_UM8B6_yUGNHnin5tz7vvYPYJNiDkcU",
+  "authDomain": "bna-system-prod.firebaseapp.com",
+  "firestoreDatabaseId": "bnadatabase",
+  "storageBucket": "bna-system-prod.firebasestorage.app",
+  "messagingSenderId": "74978651906",
+  "measurementId": ""
+}
