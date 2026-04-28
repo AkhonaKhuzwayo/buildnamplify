@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
 import { signInWithEmailAndPassword } from 'firebase/auth';
-import { auth } from '../lib/firebase';
+import { collection, query, where, getDocs } from 'firebase/firestore';
+import { auth, db } from '../lib/firebase';
 import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { ShieldAlert, Eye, EyeOff, ArrowLeft } from 'lucide-react';
 import { motion } from 'motion/react';
 
 export default function Login() {
   const [searchParams] = useSearchParams();
-  const [email, setEmail] = useState('');
+  const [employeeId, setEmployeeId] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
@@ -29,19 +30,27 @@ export default function Login() {
     e.preventDefault();
     setLoading(true);
     setError('');
-    const normalizedEmail = email.trim().toLowerCase();
     try {
-      await signInWithEmailAndPassword(auth, normalizedEmail, password);
+      const snap = await getDocs(
+        query(collection(db, 'profiles'), where('employeeId', '==', employeeId.trim()))
+      );
+      if (snap.empty) {
+        setError('Employee ID not found. Contact your admin if you have been provisioned an account.');
+        setLoading(false);
+        return;
+      }
+      const userEmail = snap.docs[0].data().email as string;
+      await signInWithEmailAndPassword(auth, userEmail, password);
       navigate('/home');
     } catch (err: any) {
-      console.error("Login Error:", err);
+      console.error('Login Error:', err);
       let message = 'Failed to login';
-      if (err.code === 'auth/invalid-credential') {
-        message = 'Invalid email or password. Check with your admin if you\'ve been provisioned an account.';
-      } else if (err.code === 'auth/user-not-found') {
-        message = 'No account found with this email. Contact your admin to set up your account.';
-      } else if (err.code === 'auth/wrong-password') {
+      if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password') {
         message = 'Incorrect password. Please try again.';
+      } else if (err.code === 'auth/user-not-found') {
+        message = 'No account found for this Employee ID. Contact your admin.';
+      } else if (err.code === 'auth/too-many-requests') {
+        message = 'Too many failed attempts. Please wait before trying again.';
       } else {
         message = err.message || 'Failed to login. Please check your internet connection.';
       }
@@ -78,13 +87,13 @@ export default function Login() {
 
         <form onSubmit={handleLogin} className="space-y-5">
           <div className="form-group">
-            <label className="block text-[11px] font-bold text-text-s uppercase tracking-wider mb-2">Email Address</label>
+            <label className="block text-[11px] font-bold text-text-s uppercase tracking-wider mb-2">Employee ID</label>
             <input 
-              type="email" 
+              type="text" 
               className="bna-input"
-              placeholder="e.g. administrator@bna.co.za"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              placeholder="e.g. admin_manqoba1 or 00041"
+              value={employeeId}
+              onChange={(e) => setEmployeeId(e.target.value)}
               required
             />
           </div>

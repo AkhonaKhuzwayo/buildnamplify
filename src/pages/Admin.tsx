@@ -35,7 +35,6 @@ const data = [
 ];
 
 const getActivationRate = (activation: any) => activation.rate ?? (activation.activationType === 'card-sim' ? 110 : 100);
-
 interface LiveStaffStat {
   dailyCount: number;
   totalAccumulated: number;
@@ -56,9 +55,21 @@ export default function Admin() {
   const [selectedUser, setSelectedUser] = useState<any | null>(null);
   const [selectedUserDocs, setSelectedUserDocs] = useState<any[]>([]);
   const [userToDelete, setUserToDelete] = useState<any | null>(null);
-  const [newUser, setNewUser] = useState({ email: '', password: '', role: 'guest', displayName: '', campaignId: '' });
+  const [newUser, setNewUser] = useState({
+    email: '',
+    password: '',
+    role: 'guest',
+    displayName: '',
+    campaignId: '',
+    username: '',
+    employeeId: '',
+    gender: '',
+    isStakeholder: false,
+    age: '',
+    predictedPerformance: ''
+  });
   const [loading, setLoading] = useState(false);
-  const [generatedCreds, setGeneratedCreds] = useState<{ u: string, p: string } | null>(null);
+  const [generatedCreds, setGeneratedCreds] = useState<{ u: string, p: string, username: string, employeeId: string } | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [globalDailyCount, setGlobalDailyCount] = useState(0);
   const [globalTotalCount, setGlobalTotalCount] = useState(0);
@@ -67,6 +78,7 @@ export default function Admin() {
   const [staffStats, setStaffStats] = useState<{[key: string]: { daily: number, total: number }}>({});
 
   const [liveReportStats, setLiveReportStats] = useState<Record<string, LiveStaffStat>>({});
+
 
   useEffect(() => {
     const fetchStats = async () => {
@@ -232,19 +244,148 @@ export default function Admin() {
   };
 
   const generatePassword = () => {
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*";
-    let password = "";
-    for (let i = 0; i < 12; i++) {
-      password += chars.charAt(Math.floor(Math.random() * chars.length));
+    const rawName = (newUser.displayName || '').toLowerCase();
+    const baseName = rawName.replace(/[^a-z0-9]/g, '');
+
+    if (!baseName) {
+      alert('Enter employee full name first to auto-generate password.');
+      return;
     }
+
+    if (newUser.role === 'admin') {
+      setNewUser(prev => ({ ...prev, password: `${baseName}@00` }));
+      return;
+    }
+
+    const sameNameEmployeeCount = users.filter((u) => {
+      const existingName = (u.displayName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      return existingName === baseName && u.role !== 'admin';
+    }).length;
+
+    const sequence = String(sameNameEmployeeCount + 1).padStart(2, '0');
+    const password = `${baseName}@${sequence}`;
+
     setNewUser(prev => ({ ...prev, password }));
   };
 
-  const generateUsername = (name: string) => {
-    if (!name) return;
-    const base = name.toLowerCase().replace(/\s+/g, '.');
-    const random = Math.floor(1000 + Math.random() * 9000);
-    setNewUser(prev => ({ ...prev, email: `${base}${random}@bna-staff.co.za` }));
+  const normalizeIdentityToken = (value: string) => value.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+
+  const getStructuredFirstName = () => {
+    const firstRaw = (newUser.displayName || '').trim().split(/\s+/)[0] || 'Staff';
+    const lettersOnly = firstRaw.replace(/[^a-zA-Z]/g, '');
+    if (!lettersOnly) return 'Staff';
+    return `${lettersOnly.charAt(0).toUpperCase()}${lettersOnly.slice(1).toLowerCase()}`;
+  };
+
+  const getExecutiveDigit = () => {
+    return newUser.role === 'admin' ? '1' : '0';
+  };
+
+  const getGenderDigit = () => {
+    if (newUser.gender === 'male') return '8';
+    if (newUser.gender === 'female') return '2';
+    return '0';
+  };
+
+  const getBenchmarkPrediction = () => {
+    const age = Number(newUser.age);
+    if (!Number.isFinite(age)) return 'high';
+    if (age >= 21 && age <= 35) return 'high';
+    return 'lower';
+  };
+
+  // High performer = 1, Lower performer = 2.
+  const getPerformancePredictionDigit = () => {
+    const selectedPrediction = newUser.predictedPerformance || getBenchmarkPrediction();
+    return selectedPrediction === 'high' ? '1' : '2';
+  };
+
+  const buildRepFiveDigitCode = () => {
+    const stakeholderDigit = newUser.isStakeholder ? '1' : '0';
+    const executiveDigit = getExecutiveDigit();
+    const genderDigit = getGenderDigit();
+    const campaignAccessDigit = '9';
+    const performanceDigit = getPerformancePredictionDigit();
+    return `${stakeholderDigit}${executiveDigit}${genderDigit}${campaignAccessDigit}${performanceDigit}`;
+  };
+
+  const generateStructuredIdentity = () => {
+    const firstName = getStructuredFirstName();
+
+    if (newUser.role === 'admin' || newUser.role === 'official') {
+      const repCode = buildRepFiveDigitCode();
+      const repId = `rep_${firstName}_${repCode}`;
+      setNewUser(prev => ({ ...prev, username: repId, employeeId: repId }));
+      return;
+    }
+
+    const campaignToken = normalizeIdentityToken(newUser.campaignId || '0') || '0';
+    const guestNumber = `${Math.floor(1 + Math.random() * 9)}`;
+    const campaignDigit = campaignToken.replace(/\D/g, '').charAt(0) || '0';
+    setNewUser(prev => ({
+      ...prev,
+      username: `guest_${campaignToken}_${guestNumber}`,
+      employeeId: `000${campaignDigit}${guestNumber}`
+    }));
+  };
+
+  const validateIdentityForRole = (role: string, username: string, employeeId: string) => {
+    if (!username || !employeeId) return 'Username and Employee ID are required.';
+    if (/\s/.test(username)) return 'Username cannot contain spaces.';
+
+    if (role === 'admin') {
+      if (!/^rep_[A-Za-z]+_\d{5}$/.test(username)) return 'Admin ID must match: rep_<FirstName>_<5Digits>.';
+      if (employeeId !== username) return 'Admin employee ID must exactly match the generated rep ID.';
+      const adminDigits = employeeId.split('_')[2] || '';
+      if (adminDigits.charAt(1) !== '1') return 'Admin status digit (2nd digit) must be 1 for admin.';
+      return null;
+    }
+
+    if (role === 'official') {
+      if (!/^rep_[A-Za-z]+_\d{5}$/.test(username)) return 'Representative ID must match: rep_<FirstName>_<5Digits>.';
+      if (employeeId !== username) return 'Representative employee ID must exactly match the generated rep ID.';
+      const codeFromUsername = username.split('_')[2] || '';
+      if (codeFromUsername.charAt(1) !== '0') return 'Standard employee admin-status digit (2nd digit) must be 0.';
+      const expectedCode = buildRepFiveDigitCode();
+      if (codeFromUsername !== expectedCode) {
+        return `Representative ID must follow the A-B-C-D-E rules. Expected 5-digit code: ${expectedCode}.`;
+      }
+      return null;
+    }
+
+    if (role === 'guest') {
+      if (!/^guest_[a-z0-9-]+_\d+$/.test(username)) return 'Guest username must match: guest_<campaignID>_<number>.';
+      if (!/^000\d{2}$/.test(employeeId)) return 'Guest employee ID must match: 000XY.';
+      return null;
+    }
+
+    return 'Unsupported role for identity validation.';
+  };
+
+  const sendCredentialsToEmployeeEmail = (creds: { u: string, p: string, username: string, employeeId: string }) => {
+    const loginUrl = `${window.location.origin}/login`;
+    const subject = 'BNA System Login Credentials';
+    const body = [
+      'Hello,',
+      '',
+      'Your BNA account has been provisioned.',
+      '',
+      `Login URL: ${loginUrl}`,
+      `Login ID (Employee ID): ${creds.employeeId}`,
+      `Password: ${creds.p}`,
+      '',
+      'Internal auth email (system use):',
+      `${creds.u}`,
+      '',
+      `Username: ${creds.username}`,
+      `Employee ID: ${creds.employeeId}`,
+      '',
+      'Please log in using Employee ID and Password only.',
+      'Do not share these credentials with unauthorized users.'
+    ].join('\n');
+
+    const mailtoUrl = `mailto:${encodeURIComponent(creds.u)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    window.location.href = mailtoUrl;
   };
 
   const toggleUserStatus = async (targetUser: any) => {
@@ -372,10 +513,49 @@ export default function Admin() {
 
   const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
+    const normalizedUsername = newUser.username.trim();
+    const normalizedEmployeeId = newUser.employeeId.trim();
     const normalizedEmail = newUser.email.trim().toLowerCase();
+    if (!normalizedEmail || !/^[^@]+@[^@]+\.[^@]+$/.test(normalizedEmail)) {
+      alert('Please enter a valid email address for the employee.');
+      return;
+    }
+
+    if ((newUser.role === 'official' || newUser.role === 'guest') && !newUser.campaignId) {
+      alert('Please select a campaign for officials and guest staff.');
+      return;
+    }
+
+    if (!newUser.gender) {
+      alert('Please select employee gender before provisioning.');
+      return;
+    }
+
+    const identityError = validateIdentityForRole(newUser.role, normalizedUsername, normalizedEmployeeId);
+    if (identityError) {
+      alert(identityError);
+      return;
+    }
     
     setLoading(true);
     try {
+      const [usernameSnap, employeeIdSnap] = await Promise.all([
+        getDocs(query(collection(db, 'profiles'), where('username', '==', normalizedUsername))),
+        getDocs(query(collection(db, 'profiles'), where('employeeId', '==', normalizedEmployeeId)))
+      ]);
+
+      if (!usernameSnap.empty) {
+        alert('This username already exists. Use a different username.');
+        setLoading(false);
+        return;
+      }
+
+      if (!employeeIdSnap.empty) {
+        alert('This employee ID already exists. Use a different employee ID.');
+        setLoading(false);
+        return;
+      }
+
       // Create Firebase Auth user
       console.log("Creating Firebase Auth user for:", normalizedEmail);
       const userCredential = await createUserWithEmailAndPassword(auth, normalizedEmail, newUser.password);
@@ -387,15 +567,40 @@ export default function Admin() {
         uid: uid,
         email: normalizedEmail,
         displayName: newUser.displayName.trim(),
+        username: normalizedUsername,
+        employeeId: normalizedEmployeeId,
         role: newUser.role,
         campaignId: newUser.campaignId,
+        gender: newUser.gender,
+        isStakeholder: newUser.isStakeholder,
+        age: Number(newUser.age) || null,
+        predictedPerformance: newUser.predictedPerformance,
+        performancePrediction: getPerformancePredictionDigit(),
         isActive: true,
         createdAt: serverTimestamp()
       });
       
-      setGeneratedCreds({ u: normalizedEmail, p: newUser.password });
-      setNewUser({ email: '', password: '', role: 'guest', displayName: '', campaignId: '' });
-      alert(`✅ Employee account created successfully!\n\nEmail: ${normalizedEmail}\nPassword: ${newUser.password}\n\nShare these credentials with the employee.`);
+      const creds = { u: normalizedEmail, p: newUser.password, username: normalizedUsername, employeeId: normalizedEmployeeId };
+      setGeneratedCreds(creds);
+      setNewUser({
+        email: '',
+        password: '',
+        role: 'guest',
+        displayName: '',
+        campaignId: '',
+        username: '',
+        employeeId: '',
+        gender: '',
+        isStakeholder: false,
+        age: '',
+        predictedPerformance: ''
+      });
+
+      if (window.confirm('Employee account created. Send credentials to the employee email now?')) {
+        sendCredentialsToEmployeeEmail(creds);
+      }
+
+      alert(`✅ Employee account created successfully!\n\nLogin ID: ${normalizedEmployeeId}\nPassword: ${newUser.password}\n\nShare these credentials with the employee.`);
     } catch (err: any) {
       console.error("Error adding user:", err);
       let message = "Failed to create account.";
@@ -523,7 +728,7 @@ export default function Admin() {
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
               {[
                 { label: 'Total Activations', val: globalTotalCount, change: 'Historical', icon: BarChart3 },
-                { label: 'Active Staff', val: users.length, change: 'Live', icon: Users },
+                { label: 'Active Staff', val: users.filter(u => u.isActive !== false).length, change: 'Live', icon: Users },
                 { label: 'Daily Target (All)', val: globalDailyCount, change: 'Today', icon: Shield },
                 { label: 'Daily Rate Total', val: `R${globalDailyEarnings.toFixed(2)}`, change: 'Today', icon: Briefcase },
                 { label: 'Total Rate Total', val: `R${globalTotalEarnings.toFixed(2)}`, change: 'Aggregate', icon: TrendingUp }
@@ -1046,6 +1251,18 @@ export default function Admin() {
                     <p className="text-sm font-medium">{selectedUser.campaignId}</p>
                   </div>
                 )}
+                {selectedUser.username && (
+                  <div>
+                    <label className="text-[10px] uppercase text-text-s font-bold tracking-widest block mb-1">Username</label>
+                    <p className="text-sm font-medium font-mono">{selectedUser.username}</p>
+                  </div>
+                )}
+                {selectedUser.employeeId && (
+                  <div>
+                    <label className="text-[10px] uppercase text-text-s font-bold tracking-widest block mb-1">Employee ID</label>
+                    <p className="text-sm font-medium font-mono">{selectedUser.employeeId}</p>
+                  </div>
+                )}
                 <div>
                   <label className="text-[10px] uppercase text-text-s font-bold tracking-widest block mb-1">Account Created</label>
                   <p className="text-sm font-medium">
@@ -1186,6 +1403,14 @@ export default function Admin() {
                         <span className="text-white text-sm select-all">{generatedCreds.u}</span>
                       </div>
                       <div>
+                        <span className="text-[10px] text-text-s block uppercase">Username</span>
+                        <span className="text-white text-sm select-all">{generatedCreds.username}</span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-text-s block uppercase">Employee ID</span>
+                        <span className="text-white text-sm select-all">{generatedCreds.employeeId}</span>
+                      </div>
+                      <div>
                         <span className="text-[10px] text-text-s block uppercase">Initial Password</span>
                         <span className="text-accent text-sm select-all">{generatedCreds.p}</span>
                       </div>
@@ -1195,13 +1420,20 @@ export default function Admin() {
                       <ol className="list-decimal ml-4 mt-2 space-y-1">
                         <li>Send these credentials to the employee.</li>
                         <li>Ask them to go directly to the <strong>Login</strong> page.</li>
-                        <li>They must use the exact email and password shown above.</li>
+                        <li>They must use the exact Employee ID and password shown above.</li>
                         <li>After first login, they can begin clock-ins and activation submissions.</li>
                       </ol>
                     </div>
                     <p className="text-[10px] text-text-s leading-relaxed italic">
                       Note: Registration is no longer required for admin-provisioned accounts.
                     </p>
+                    <button
+                      type="button"
+                      onClick={() => generatedCreds && sendCredentialsToEmployeeEmail(generatedCreds)}
+                      className="w-full py-2.5 rounded border border-accent/40 text-accent hover:bg-accent/10 text-xs font-bold uppercase tracking-widest transition-all"
+                    >
+                      Send To Employee Email
+                    </button>
                     <button 
                       type="button"
                       onClick={() => { setShowAddUser(false); setGeneratedCreds(null); }}
@@ -1235,27 +1467,110 @@ export default function Admin() {
                           <option value="admin">Admin</option>
                         </select>
                       </div>
+                      <div>
+                        <label className="text-xs uppercase text-gray-500 mb-1 block font-bold tracking-widest">Gender</label>
+                        <select
+                          className="w-full bna-input bna-select text-sm"
+                          value={newUser.gender}
+                          onChange={e => setNewUser(p => ({ ...p, gender: e.target.value }))}
+                        >
+                          <option value="">Select Gender</option>
+                          <option value="female">Female (Digit 2)</option>
+                          <option value="male">Male (Digit 8)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs uppercase text-gray-500 mb-1 block font-bold tracking-widest">Age</label>
+                        <input
+                          type="number"
+                          min={18}
+                          max={75}
+                          className="w-full bna-input text-sm"
+                          value={newUser.age}
+                          onChange={e => setNewUser(p => ({ ...p, age: e.target.value }))}
+                          placeholder="e.g. 27"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs uppercase text-gray-500 mb-1 block font-bold tracking-widest">Performance Prediction</label>
+                        <select
+                          className="w-full bna-input bna-select text-sm"
+                          value={newUser.predictedPerformance}
+                          onChange={e => setNewUser(p => ({ ...p, predictedPerformance: e.target.value }))}
+                        >
+                          <option value="">Auto (Benchmark)</option>
+                          <option value="high">High Performer (Digit 1)</option>
+                          <option value="lower">Lower Performer (Digit 2)</option>
+                        </select>
+                      </div>
+                      <div className="col-span-2 flex items-center justify-between rounded border border-border px-3 py-2 bg-bg/40">
+                        <div>
+                          <p className="text-xs uppercase text-gray-500 font-bold tracking-widest">Stakeholder Status</p>
+                          <p className="text-[10px] text-text-s mt-1">A digit currently defaults to 0 unless manually overridden later.</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setNewUser(p => ({ ...p, isStakeholder: !p.isStakeholder }))}
+                          className={`text-[10px] px-3 py-1 rounded font-bold uppercase tracking-widest ${newUser.isStakeholder ? 'bg-accent/20 text-accent border border-accent/50' : 'bg-white/5 text-text-s border border-border'}`}
+                        >
+                          {newUser.isStakeholder ? 'Stakeholder' : 'Not Stakeholder'}
+                        </button>
+                      </div>
                     </div>
 
                     <div className="space-y-4">
                       <div>
-                        <div className="flex justify-between items-end mb-1">
-                          <label className="text-xs uppercase text-gray-500 font-bold tracking-widest">Email / Username</label>
-                          <button 
-                            type="button" 
-                            onClick={() => generateUsername(newUser.displayName)}
-                            className="text-[10px] text-accent hover:underline"
-                          >
-                            Auto-Generate
-                          </button>
-                        </div>
+                        <label className="text-xs uppercase text-gray-500 font-bold tracking-widest mb-1 block">Employee Email</label>
                         <input 
-                          type="email" 
-                          required 
+                          type="email"
+                          required
                           className="w-full bna-input text-sm"
                           value={newUser.email}
                           onChange={e => setNewUser(p => ({ ...p, email: e.target.value }))}
+                          placeholder="employee@example.com"
                         />
+                      </div>
+
+                      <div>
+                        <div className="flex justify-between items-end mb-1">
+                          <label className="text-xs uppercase text-gray-500 font-bold tracking-widest">Username (Structured)</label>
+                          <button
+                            type="button"
+                            onClick={generateStructuredIdentity}
+                            className="text-[10px] text-accent hover:underline"
+                          >
+                            Generate Structured ID
+                          </button>
+                        </div>
+                        <input
+                          type="text"
+                          required
+                          className="w-full bna-input text-sm font-mono"
+                          value={newUser.username}
+                          onChange={e => setNewUser(p => ({ ...p, username: e.target.value.replace(/\s+/g, '_') }))}
+                        />
+                        <p className="text-[10px] text-text-s mt-1">
+                          Structured rep ID: rep_&lt;FirstName&gt;_&lt;ABCDE&gt; (for admin and official)
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="text-xs uppercase text-gray-500 font-bold tracking-widest mb-1 block">Employee ID</label>
+                        <input
+                          type="text"
+                          required
+                          className="w-full bna-input text-sm font-mono"
+                          value={newUser.employeeId}
+                          onChange={e => setNewUser(p => ({ ...p, employeeId: e.target.value.trim() }))}
+                        />
+                        <p className="text-[10px] text-text-s mt-1">
+                          ABCDE logic: A=stakeholder (default 0), B=admin status (admin=1, employee=0), C=gender (male=8, female=2), D=access (9), E=prediction (high=1, lower=2)
+                        </p>
+                        {(newUser.role === 'official' || newUser.role === 'admin') && (
+                          <p className="text-[10px] text-accent mt-1 font-mono">
+                            Expected 5-digit code now: {buildRepFiveDigitCode()}
+                          </p>
+                        )}
                       </div>
 
                       <div>
@@ -1266,7 +1581,7 @@ export default function Admin() {
                             onClick={generatePassword}
                             className="text-[10px] text-accent hover:underline"
                           >
-                            Generate Strong
+                            Auto-Generate (name@NN)
                           </button>
                         </div>
                         <input 
@@ -1279,9 +1594,9 @@ export default function Admin() {
                       </div>
                     </div>
 
-                    {newUser.role === 'official' && (
+                    {(newUser.role === 'official' || newUser.role === 'guest') && (
                       <div>
-                        <label className="text-xs uppercase text-gray-500 mb-1 block font-bold tracking-widest">Default Campaign</label>
+                        <label className="text-xs uppercase text-gray-500 mb-1 block font-bold tracking-widest">Assigned Campaign</label>
                         <select 
                           required 
                           className="w-full bna-input bna-select text-sm"
