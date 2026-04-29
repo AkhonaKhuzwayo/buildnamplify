@@ -24,7 +24,14 @@ const CAMPAIGN_LOGO_FALLBACKS: Record<string, string> = {
   gumtree: '/gumtree-logo.jpeg'
 };
 
-const getActivationRate = (activation: any) => activation.rate ?? (activation.activationType === 'card-sim' ? 110 : 100);
+const getActivationRate = (activation: any) => {
+  if (typeof activation?.rate === 'number') return activation.rate;
+  if (activation?.activationType === 'card-sim') return 110;
+  if (activation?.activationType === 'card-only') return 100;
+  if (activation?.activationType === 'account-advert') return 85;
+  if (activation?.activationType === 'account-only') return 80;
+  return 100;
+};
 
 export default function Dashboard() {
   const { profile, selectedCampaignId, setSelectedCampaignId } = useAuth();
@@ -405,16 +412,30 @@ export default function Dashboard() {
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
                       <p className="text-[10px] uppercase text-text-s font-bold tracking-widest">Employee ID</p>
-                      <div className="flex items-center gap-2 text-sm font-mono text-white/80">
+                      <div className="flex items-center gap-2 text-sm font-mono text-text-p">
                         <Shield size={14} className="text-accent" />
-                        {profile?.uid?.slice(0, 10)}...
+                        {profile?.employeeId || <span className="text-red-500/50 italic">Not Assigned</span>}
                       </div>
                     </div>
                     <div className="space-y-1">
                       <p className="text-[10px] uppercase text-text-s font-bold tracking-widest">Email Address</p>
-                      <div className="flex items-center gap-2 text-sm text-white/80">
+                      <div className="flex items-center gap-2 text-sm text-text-p">
                         <Mail size={14} className="text-accent" />
                         {profile?.email}
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[10px] uppercase text-text-s font-bold tracking-widest">Gender</p>
+                      <div className="flex items-center gap-2 text-sm text-text-p">
+                        <User size={14} className="text-accent" />
+                        {profile?.gender ? `${profile.gender.charAt(0).toUpperCase()}${profile.gender.slice(1)}` : <span className="text-red-500/50 italic">Not Assigned</span>}
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[10px] uppercase text-text-s font-bold tracking-widest">Age</p>
+                      <div className="flex items-center gap-2 text-sm text-text-p">
+                        <Calendar size={14} className="text-accent" />
+                        {typeof profile?.age === 'number' ? profile.age : <span className="text-red-500/50 italic">Not Assigned</span>}
                       </div>
                     </div>
                     
@@ -453,14 +474,14 @@ export default function Dashboard() {
                       <>
                         <div className="col-span-2 space-y-1">
                           <p className="text-[10px] uppercase text-text-s font-bold tracking-widest">Identity Number</p>
-                          <div className="flex items-center gap-2 text-sm text-white/80 font-mono">
+                          <div className="flex items-center gap-2 text-sm text-text-p font-mono">
                             <CreditCard size={14} className="text-accent" />
                             {profile?.idNumber || <span className="text-red-500/50 italic">Not Assigned</span>}
                           </div>
                         </div>
                         <div className="col-span-2 space-y-1">
                           <p className="text-[10px] uppercase text-text-s font-bold tracking-widest">Home Address</p>
-                          <div className="flex items-start gap-2 text-sm text-white/80">
+                          <div className="flex items-start gap-2 text-sm text-text-p">
                             <MapPinIcon size={14} className="text-accent mt-0.5" />
                             <span className="whitespace-pre-wrap">
                               {profile?.homeAddress || <span className="text-red-500/50 italic">Unspecified</span>}
@@ -472,14 +493,14 @@ export default function Dashboard() {
 
                     <div className="space-y-1">
                       <p className="text-[10px] uppercase text-text-s font-bold tracking-widest">Operational Status</p>
-                      <div className="flex items-center gap-2 text-sm text-white/80">
+                      <div className="flex items-center gap-2 text-sm text-text-p">
                         <div className="w-2 h-2 rounded-full bg-accent" />
                         Online & Active
                       </div>
                     </div>
                     <div className="space-y-1">
                       <p className="text-[10px] uppercase text-text-s font-bold tracking-widest">Joined Collective</p>
-                      <div className="flex items-center gap-2 text-sm text-white/80">
+                      <div className="flex items-center gap-2 text-sm text-text-p">
                         <Calendar size={14} className="text-accent" />
                         {profile?.createdAt?.toDate ? profile.createdAt.toDate().toLocaleDateString() : 'Pending'}
                       </div>

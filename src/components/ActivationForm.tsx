@@ -15,11 +15,20 @@ export default function ActivationForm() {
     surname: '',
     idNumber: ''
   });
-  const [activationType, setActivationType] = useState<'card-only' | 'card-sim' | null>(null);
+  const [activationType, setActivationType] = useState<'card-only' | 'card-sim' | 'account-only' | 'account-advert' | null>(null);
   const [prizePhoto, setPrizePhoto] = useState<File | null>(null);
   const [summaryPhoto, setSummaryPhoto] = useState<File | null>(null);
 
-  const RATES = { 'card-only': 100, 'card-sim': 110 } as const;
+  const RATES = { 'card-only': 100, 'card-sim': 110, 'account-only': 80, 'account-advert': 85 } as const;
+  const isGumtreeCampaign = (selectedCampaignId || '').toLowerCase().includes('gumtree');
+
+  const getActivationTypeLabel = (type: string) => {
+    if (type === 'card-sim') return 'Card + SIM';
+    if (type === 'card-only') return 'Card Only';
+    if (type === 'account-advert') return 'Account + Advert';
+    if (type === 'account-only') return 'Account';
+    return type;
+  };
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState('');
@@ -149,21 +158,40 @@ export default function ActivationForm() {
           <label className="text-[11px] uppercase tracking-wider text-text-s mb-2 block font-bold">
             Activation Type <span className="text-red-500">*</span>
           </label>
+          {(() => {
+            const activationOptions = isGumtreeCampaign
+              ? [
+                  {
+                    value: 'account-only' as const,
+                    title: 'Account',
+                    description: 'Customer account activation only.',
+                    icon: <CreditCard size={18} />
+                  },
+                  {
+                    value: 'account-advert' as const,
+                    title: 'Account + Advert',
+                    description: 'Account activation with advert placement.',
+                    icon: <Layers size={18} />
+                  }
+                ]
+              : [
+                  {
+                    value: 'card-only' as const,
+                    title: 'Bank Card Only',
+                    description: 'Customer receives a bank card activation.',
+                    icon: <CreditCard size={18} />
+                  },
+                  {
+                    value: 'card-sim' as const,
+                    title: 'Card + SIM Card',
+                    description: 'Customer receives bank and SIM activation.',
+                    icon: <Layers size={18} />
+                  }
+                ];
+
+            return (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {[
-              {
-                value: 'card-only' as const,
-                title: 'Bank Card Only',
-                description: 'Customer receives a bank card activation.',
-                icon: <CreditCard size={18} />
-              },
-              {
-                value: 'card-sim' as const,
-                title: 'Card + SIM Card',
-                description: 'Customer receives bank and SIM activation.',
-                icon: <Layers size={18} />
-              }
-            ].map((option) => {
+            {activationOptions.map((option) => {
               const isSelected = activationType === option.value;
 
               return (
@@ -192,6 +220,8 @@ export default function ActivationForm() {
               );
             })}
           </div>
+            );
+          })()}
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
@@ -322,12 +352,12 @@ export default function ActivationForm() {
                     <p className="text-xs font-bold">{claim.firstName} {claim.surname}</p>
                     <div className="flex items-center gap-2 mt-1">
                       <span className={`text-[9px] px-2 py-0.5 rounded uppercase font-bold tracking-wide ${
-                        claim.activationType === 'card-sim' ? 'bg-purple-500/10 text-purple-400' : 'bg-accent/10 text-accent'
+                        (claim.activationType === 'card-sim' || claim.activationType === 'account-advert') ? 'bg-purple-500/10 text-purple-400' : 'bg-accent/10 text-accent'
                       }`}>
-                        {claim.activationType === 'card-sim' ? 'Card + SIM' : 'Card Only'}
+                        {getActivationTypeLabel(claim.activationType || '')}
                       </span>
                       <span className="text-[9px] text-green-400 font-bold uppercase tracking-wide">
-                        R{claim.rate ?? (claim.activationType === 'card-sim' ? 110 : 100)}.00
+                        R{claim.rate ?? (claim.activationType === 'card-sim' ? 110 : claim.activationType === 'account-advert' ? 85 : claim.activationType === 'account-only' ? 80 : 100)}.00
                       </span>
                     </div>
                   </div>

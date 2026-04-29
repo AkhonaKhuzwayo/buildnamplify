@@ -94,7 +94,7 @@ service cloud.firestore {
                (
                  (
                    data.idNumber is string && data.idNumber.size() == 13 && data.idNumber.matches('^\\d{13}$') &&
-                   data.activationType in ['card-only', 'card-sim'] &&
+                   data.activationType in ['card-only', 'card-sim', 'account-only', 'account-advert'] &&
                    data.rate is number &&
                    data.prizePhoto is string && data.prizePhoto.size() > 0 &&
                    data.summaryPhoto is string && data.summaryPhoto.size() > 0

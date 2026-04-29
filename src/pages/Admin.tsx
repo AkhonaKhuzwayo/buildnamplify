@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { collection, query, orderBy, limit, onSnapshot, addDoc, serverTimestamp, setDoc, doc, deleteDoc, where, getDocs, updateDoc } from 'firebase/firestore';
 import { createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { auth, db } from '../lib/firebase';
@@ -34,7 +34,14 @@ const data = [
   { name: 'Sun', count: 80 },
 ];
 
-const getActivationRate = (activation: any) => activation.rate ?? (activation.activationType === 'card-sim' ? 110 : 100);
+const getActivationRate = (activation: any) => {
+  if (typeof activation?.rate === 'number') return activation.rate;
+  if (activation?.activationType === 'card-sim') return 110;
+  if (activation?.activationType === 'card-only') return 100;
+  if (activation?.activationType === 'account-advert') return 85;
+  if (activation?.activationType === 'account-only') return 80;
+  return 100;
+};
 interface LiveStaffStat {
   dailyCount: number;
   totalAccumulated: number;
@@ -76,6 +83,7 @@ export default function Admin() {
   const [globalDailyEarnings, setGlobalDailyEarnings] = useState(0);
   const [globalTotalEarnings, setGlobalTotalEarnings] = useState(0);
   const [staffStats, setStaffStats] = useState<{[key: string]: { daily: number, total: number }}>({});
+  const hasRunAdminIdMigration = useRef(false);
 
   const [liveReportStats, setLiveReportStats] = useState<Record<string, LiveStaffStat>>({});
 
@@ -192,7 +200,7 @@ export default function Admin() {
           totalAccumulated: stats.totalCount,
           cardOnlyCount: stats.cardOnlyCount,
           cardSimCount: stats.cardSimCount,
-          totalEarnings: stats.cardOnlyCount * 100 + stats.cardSimCount * 110,
+          totalEarnings: stats.totalEarnings,
           lastAudit: serverTimestamp()
         });
       }
@@ -218,8 +226,15 @@ export default function Admin() {
     );
     const totalDocs = totalSnaps.flatMap((snap) => snap.docs);
     const totalCount = totalDocs.length;
-    const cardOnlyCount = totalDocs.filter(d => d.data().activationType === 'card-only').length;
-    const cardSimCount = totalDocs.filter(d => d.data().activationType === 'card-sim').length;
+    const cardOnlyCount = totalDocs.filter(d => {
+      const t = d.data().activationType;
+      return t === 'card-only' || t === 'account-only';
+    }).length;
+    const cardSimCount = totalDocs.filter(d => {
+      const t = d.data().activationType;
+      return t === 'card-sim' || t === 'account-advert';
+    }).length;
+    const totalEarnings = totalDocs.reduce((sum, d) => sum + getActivationRate(d.data()), 0);
     
     const dayCounts: {[key: string]: number} = {};
     totalDocs.forEach((d) => {
@@ -240,7 +255,7 @@ export default function Admin() {
             misses++;
         }
     }
-    return { misses, dailyCount, totalCount, cardOnlyCount, cardSimCount };
+    return { misses, dailyCount, totalCount, cardOnlyCount, cardSimCount, totalEarnings };
   };
 
   const generatePassword = () => {
@@ -277,10 +292,6 @@ export default function Admin() {
     return `${lettersOnly.charAt(0).toUpperCase()}${lettersOnly.slice(1).toLowerCase()}`;
   };
 
-  const getExecutiveDigit = () => {
-    return newUser.role === 'admin' ? '1' : '0';
-  };
-
   const getGenderDigit = () => {
     if (newUser.gender === 'male') return '8';
     if (newUser.gender === 'female') return '2';
@@ -300,11 +311,19 @@ export default function Admin() {
     return selectedPrediction === 'high' ? '1' : '2';
   };
 
+  // Spot = 1, Gumtree = 2
+  const getGuestCampaignDigit = () => {
+    const id = (newUser.campaignId || '').toLowerCase();
+    if (id.includes('spot')) return '1';
+    if (id.includes('gumtree')) return '2';
+    return '0';
+  };
+
   const buildRepFiveDigitCode = () => {
     const stakeholderDigit = newUser.isStakeholder ? '1' : '0';
-    const executiveDigit = getExecutiveDigit();
+    const executiveDigit = '0'; // always 0 for official reps
     const genderDigit = getGenderDigit();
-    const campaignAccessDigit = '9';
+    const campaignAccessDigit = '9'; // universal for official BnA reps
     const performanceDigit = getPerformancePredictionDigit();
     return `${stakeholderDigit}${executiveDigit}${genderDigit}${campaignAccessDigit}${performanceDigit}`;
   };
@@ -312,50 +331,73 @@ export default function Admin() {
   const generateStructuredIdentity = () => {
     const firstName = getStructuredFirstName();
 
-    if (newUser.role === 'admin' || newUser.role === 'official') {
+    if (newUser.role === 'admin') {
+      // Format: admin_<adminName>_<index> starting at 01
+      const adminName = normalizeIdentityToken(newUser.displayName).replace(/[_\- ]+/g, '') || 'admin';
+      const existingAdminCount = users.filter(
+        (u) => u.role === 'admin' && typeof u.employeeId === 'string' && u.employeeId.startsWith(`admin_${adminName}_`)
+      ).length;
+      const index = String(existingAdminCount + 1).padStart(2, '0');
+      const adminId = `admin_${adminName}_${index}`;
+      setNewUser(prev => ({ ...prev, username: adminId, employeeId: adminId }));
+      return;
+    }
+
+    if (newUser.role === 'official') {
+      if (!newUser.gender) {
+        alert('Select gender first to generate official rep ID correctly.');
+        return;
+      }
+      // Format: rep_<FirstName>_<ABCDE> — 5-digit logic applies only here
       const repCode = buildRepFiveDigitCode();
       const repId = `rep_${firstName}_${repCode}`;
       setNewUser(prev => ({ ...prev, username: repId, employeeId: repId }));
       return;
     }
 
-    const campaignToken = normalizeIdentityToken(newUser.campaignId || '0') || '0';
-    const guestNumber = `${Math.floor(1 + Math.random() * 9)}`;
-    const campaignDigit = campaignToken.replace(/\D/g, '').charAt(0) || '0';
-    setNewUser(prev => ({
-      ...prev,
-      username: `guest_${campaignToken}_${guestNumber}`,
-      employeeId: `000${campaignDigit}${guestNumber}`
-    }));
+    // Guest format: <FirstName>_000<campaignDigit><individualNumber>
+    // 000 = guest identifier, campaignDigit = 1 (Spot) or 2 (Gumtree)
+    // individualNumber = sequential count of all guests across the system
+    if (!newUser.campaignId) {
+      alert('Select a campaign first to generate guest ID (Spot=1, Gumtree=2).');
+      return;
+    }
+    const campaignDigit = getGuestCampaignDigit();
+    if (campaignDigit === '0') {
+      alert('Selected campaign is not mapped. Use Spot or Gumtree.');
+      return;
+    }
+    const existingGuestCount = users.filter((u) => u.role === 'guest').length;
+    const individualNumber = existingGuestCount + 1;
+    const guestId = `${firstName}_000${campaignDigit}${individualNumber}`;
+    setNewUser(prev => ({ ...prev, username: guestId, employeeId: guestId }));
   };
 
   const validateIdentityForRole = (role: string, username: string, employeeId: string) => {
     if (!username || !employeeId) return 'Username and Employee ID are required.';
     if (/\s/.test(username)) return 'Username cannot contain spaces.';
+    if (username !== employeeId) return 'Username and Employee ID must match.';
 
     if (role === 'admin') {
-      if (!/^rep_[A-Za-z]+_\d{5}$/.test(username)) return 'Admin ID must match: rep_<FirstName>_<5Digits>.';
-      if (employeeId !== username) return 'Admin employee ID must exactly match the generated rep ID.';
-      const adminDigits = employeeId.split('_')[2] || '';
-      if (adminDigits.charAt(1) !== '1') return 'Admin status digit (2nd digit) must be 1 for admin.';
+      // Format: admin_<adminName>_<NN>
+      if (!/^admin_[a-z0-9]+_\d{2}$/.test(username)) return 'Admin ID must match: admin_<name>_<NN> (e.g. admin_akhona_01).';
       return null;
     }
 
     if (role === 'official') {
-      if (!/^rep_[A-Za-z]+_\d{5}$/.test(username)) return 'Representative ID must match: rep_<FirstName>_<5Digits>.';
-      if (employeeId !== username) return 'Representative employee ID must exactly match the generated rep ID.';
+      // Format: rep_<FirstName>_<ABCDE>
+      if (!/^rep_[A-Za-z]+_\d{5}$/.test(username)) return 'Official rep ID must match: rep_<FirstName>_<ABCDE> (e.g. rep_Sarah_00291).';
       const codeFromUsername = username.split('_')[2] || '';
-      if (codeFromUsername.charAt(1) !== '0') return 'Standard employee admin-status digit (2nd digit) must be 0.';
       const expectedCode = buildRepFiveDigitCode();
       if (codeFromUsername !== expectedCode) {
-        return `Representative ID must follow the A-B-C-D-E rules. Expected 5-digit code: ${expectedCode}.`;
+        return `Official rep 5-digit code must follow A-B-C-D-E rules. Expected: ${expectedCode}.`;
       }
       return null;
     }
 
     if (role === 'guest') {
-      if (!/^guest_[a-z0-9-]+_\d+$/.test(username)) return 'Guest username must match: guest_<campaignID>_<number>.';
-      if (!/^000\d{2}$/.test(employeeId)) return 'Guest employee ID must match: 000XY.';
+      // Format: <FirstName>_000<campaignDigit><individualNumber>
+      if (!/^[A-Za-z]+_000[12]\d+$/.test(username)) return 'Guest ID must match: <FirstName>_000<campaignDigit><number> (e.g. Sisanda_00011).';
       return null;
     }
 
@@ -455,6 +497,57 @@ export default function Admin() {
   };
 
   useEffect(() => {
+    if (hasRunAdminIdMigration.current) return;
+    if (!profile || profile.role !== 'admin') return;
+    if (users.length === 0) return;
+
+    hasRunAdminIdMigration.current = true;
+
+    const migrate = async () => {
+      try {
+        const adminUsers = users.filter((u) => u.role === 'admin' && (u.id || u.uid));
+        const byNameCounters: Record<string, number> = {};
+        const sortedAdmins = [...adminUsers].sort((a, b) => {
+          const aTime = a.createdAt?.seconds ?? 0;
+          const bTime = b.createdAt?.seconds ?? 0;
+          return aTime - bTime;
+        });
+
+        let updatedCount = 0;
+        for (const adminUser of sortedAdmins) {
+          const docId = adminUser.id || adminUser.uid;
+          if (!docId) continue;
+
+          const rawName = String(adminUser.displayName || 'admin');
+          const baseName = normalizeIdentityToken(rawName).replace(/[_-]+/g, '') || 'admin';
+          byNameCounters[baseName] = (byNameCounters[baseName] || 0) + 1;
+          const index = String(byNameCounters[baseName]).padStart(2, '0');
+          const newAdminId = `admin_${baseName}_${index}`;
+
+          const currentUsername = String(adminUser.username || '');
+          const currentEmployeeId = String(adminUser.employeeId || '');
+          if (currentUsername === newAdminId && currentEmployeeId === newAdminId) continue;
+
+          await updateDoc(doc(db, 'profiles', docId), {
+            username: newAdminId,
+            employeeId: newAdminId,
+            updatedAt: serverTimestamp()
+          });
+          updatedCount += 1;
+        }
+
+        if (updatedCount > 0) {
+          alert(`Admin ID format updated for ${updatedCount} existing profile(s).`);
+        }
+      } catch (err) {
+        console.error('Admin ID migration failed:', err);
+      }
+    };
+
+    migrate();
+  }, [users, profile]);
+
+  useEffect(() => {
     const activationCollections = getAllActivationCollectionNames();
     const activationBatches: Record<string, any[]> = {};
 
@@ -521,8 +614,8 @@ export default function Admin() {
       return;
     }
 
-    if ((newUser.role === 'official' || newUser.role === 'guest') && !newUser.campaignId) {
-      alert('Please select a campaign for officials and guest staff.');
+    if (newUser.role === 'guest' && !newUser.campaignId) {
+      alert('Please select a campaign for guest staff.');
       return;
     }
 
@@ -957,7 +1050,7 @@ export default function Admin() {
                       ['Employee Name', 'Email', 'Role', 'Zone', 'Daily Count', 'Card Only', 'Card+SIM', 'Total Earnings (ZAR)', 'Status'],
                       ...users.map(u => {
                         const uid = u.id || u.uid;
-                        const ls = liveReportStats[uid] || {};
+                        const ls: LiveStaffStat = liveReportStats[uid] || { dailyCount: 0, totalAccumulated: 0, cardOnlyCount: 0, cardSimCount: 0, totalEarnings: 0 };
                         return [
                           u.displayName, u.email, u.role, u.performanceZone || 'Normal',
                           ls.dailyCount ?? 0, ls.cardOnlyCount ?? 0, ls.cardSimCount ?? 0,
@@ -1368,7 +1461,7 @@ export default function Admin() {
       {/* Add User Modal */}
       <AnimatePresence>
         {showAddUser && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center px-4 py-6 overflow-y-auto">
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -1380,7 +1473,7 @@ export default function Admin() {
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="relative w-full max-w-lg bna-card p-8 shadow-3xl shadow-teal-500/10"
+              className="relative w-full max-w-lg max-h-[90vh] bna-card p-8 shadow-3xl shadow-teal-500/10 overflow-y-auto"
             >
               <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
                 <UserPlus className="text-teal-500" />
@@ -1460,7 +1553,12 @@ export default function Admin() {
                         <select 
                           className="w-full bna-input bna-select text-sm"
                           value={newUser.role}
-                          onChange={e => setNewUser(p => ({ ...p, role: e.target.value }))}
+                          onChange={e => setNewUser(p => ({
+                            ...p,
+                            role: e.target.value,
+                            username: '',
+                            employeeId: ''
+                          }))}
                         >
                           <option value="guest">Guest Employee</option>
                           <option value="official">BnA Official</option>
@@ -1550,7 +1648,7 @@ export default function Admin() {
                           onChange={e => setNewUser(p => ({ ...p, username: e.target.value.replace(/\s+/g, '_') }))}
                         />
                         <p className="text-[10px] text-text-s mt-1">
-                          Structured rep ID: rep_&lt;FirstName&gt;_&lt;ABCDE&gt; (for admin and official)
+                          admin: admin_&lt;name&gt;_01 | official: rep_&lt;FirstName&gt;_&lt;ABCDE&gt; | guest: &lt;FirstName&gt;_000&lt;campaignDigit&gt;&lt;number&gt;
                         </p>
                       </div>
 
@@ -1564,11 +1662,11 @@ export default function Admin() {
                           onChange={e => setNewUser(p => ({ ...p, employeeId: e.target.value.trim() }))}
                         />
                         <p className="text-[10px] text-text-s mt-1">
-                          ABCDE logic: A=stakeholder (default 0), B=admin status (admin=1, employee=0), C=gender (male=8, female=2), D=access (9), E=prediction (high=1, lower=2)
+                          Official ABCDE: A=stakeholder (0/1), B=always 0, C=gender (male=8/female=2), D=9 (universal access), E=prediction (high=1/lower=2). Guest: 000=guest ID, 4th digit=campaign (Spot=1, Gumtree=2), 5th=individual #
                         </p>
-                        {(newUser.role === 'official' || newUser.role === 'admin') && (
+                        {newUser.role === 'official' && (
                           <p className="text-[10px] text-accent mt-1 font-mono">
-                            Expected 5-digit code now: {buildRepFiveDigitCode()}
+                            Expected 5-digit code: {buildRepFiveDigitCode()}
                           </p>
                         )}
                       </div>
@@ -1594,7 +1692,7 @@ export default function Admin() {
                       </div>
                     </div>
 
-                    {(newUser.role === 'official' || newUser.role === 'guest') && (
+                    {newUser.role === 'guest' && (
                       <div>
                         <label className="text-xs uppercase text-gray-500 mb-1 block font-bold tracking-widest">Assigned Campaign</label>
                         <select 

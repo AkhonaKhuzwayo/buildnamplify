@@ -9,6 +9,10 @@ export interface UserProfile {
   uid: string;
   email: string | null;
   displayName: string | null;
+  employeeId?: string;
+  username?: string;
+  gender?: string;
+  age?: number | null;
   role: UserRole;
   campaignId?: string;
   isActive?: boolean;
