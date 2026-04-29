@@ -11,6 +11,10 @@ export interface UserProfile {
   displayName: string | null;
   employeeId?: string;
   username?: string;
+  forcePasswordResetRequired?: boolean;
+  passwordSetupPending?: boolean;
+  passwordMode?: 'generated' | 'custom';
+  passwordUpdatedAt?: { toDate?: () => Date };
   gender?: string;
   age?: number | null;
   role: UserRole;
@@ -50,7 +54,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }, 8000);
 
     const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
-      console.log("🔥 AuthContext: onAuthStateChanged fired, user:", firebaseUser?.email || 'null');
       setUser(firebaseUser);
       if (firebaseUser) {
         const userDocRef = doc(db, 'profiles', firebaseUser.uid);
@@ -62,7 +65,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }, 6000);
         
         const setupProfileListener = () => {
-          console.log("Setting up profile listener for UID:", firebaseUser.uid);
           return onSnapshot(userDocRef, async (docSnap) => {
             clearTimeout(profileTimeout);
             clearTimeout(hardTimeout);
@@ -70,7 +72,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             
             if (docSnap.exists()) {
               const data = docSnap.data() as UserProfile;
-              console.log("✅ Profile found for UID:", firebaseUser.uid, { role: data.role });
               setProfile({ ...data, uid: firebaseUser.uid });
               
               if (data.role === 'guest' && data.campaignId) {
@@ -78,7 +79,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               }
               setLoading(false);
             } else {
-              console.warn("⚠️ No profile at profiles/" + firebaseUser.uid + ". Searching by email:", firebaseUser.email);
+              console.warn("No profile found for current auth UID. Trying email-based recovery.");
               try {
                 const normalizedEmail = firebaseUser.email?.toLowerCase();
                 const q = query(collection(db, 'profiles'), where('email', '==', normalizedEmail));
@@ -87,8 +88,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 if (!querySnap.empty) {
                   const orphanedDoc = querySnap.docs[0];
                   const data = orphanedDoc.data();
-                  
-                  console.log("✨ Found orphaned provisioned profile. MIGRATING to UID...");
                   
                   const batch = writeBatch(db);
                   batch.set(doc(db, 'profiles', firebaseUser.uid), {
@@ -99,9 +98,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                   batch.delete(orphanedDoc.ref);
                   
                   await batch.commit();
-                  console.log("🚀 Migration successful.");
                 } else {
-                  console.error("❌ No user profile found in Firestore for UID or Email.");
+                  console.error("No user profile found in Firestore for the authenticated user.");
                   setProfile(null);
                   setLoading(false);
                 }
@@ -129,7 +127,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         };
       } else {
         clearTimeout(hardTimeout);
-        console.log("🔥 AuthContext: No user logged in, setting loading to false");
         setProfile(null);
         setSelectedCampaignId(null);
         localStorage.removeItem('selectedCampaignId');

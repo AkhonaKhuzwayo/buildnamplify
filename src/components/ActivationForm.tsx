@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { addDoc, collection, serverTimestamp, query, where, orderBy, limit, onSnapshot } from 'firebase/firestore';
+import { addDoc, collection, serverTimestamp, query, where, orderBy, onSnapshot } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth } from '../context/AuthContext';
 import { UserPlus, X, Check, Loader2, History, Gift, ClipboardList, CreditCard, Layers } from 'lucide-react';
 import imageCompression from 'browser-image-compression';
 import { getActivationCollectionName } from '../lib/activationCollections';
 import { getSouthAfricaDateKey } from '../lib/dateKey';
+import { recordSystemMetrics } from '../lib/systemMetrics';
 
 
 export default function ActivationForm() {
@@ -42,8 +43,7 @@ export default function ActivationForm() {
       collection(db, activationCollection),
       where('userId', '==', profile.uid),
       where('campaignId', '==', selectedCampaignId),
-      orderBy('timestamp', 'desc'),
-      limit(3)
+      orderBy('timestamp', 'desc')
     );
 
     const unsub = onSnapshot(q, (snap) => {
@@ -119,6 +119,15 @@ export default function ActivationForm() {
         summaryPhoto: summaryData,
         timestamp: serverTimestamp()
       });
+
+      try {
+        await recordSystemMetrics({
+          activationsCount: 1,
+          activationsEarnings: RATES[activationType!]
+        });
+      } catch (metricsErr) {
+        console.error('Failed to record activation metrics:', metricsErr);
+      }
 
       setSuccess(true);
       setFormData({ firstName: '', surname: '', idNumber: '' });
@@ -339,9 +348,9 @@ export default function ActivationForm() {
         <div className="border-t border-border p-4 bg-white/[0.02]">
           <div className="flex items-center gap-2 text-[10px] uppercase font-bold text-text-s mb-3 tracking-widest">
             <History size={12} />
-            Recent Bulk Records
+            Recent Records
           </div>
-          <div className="space-y-2">
+          <div className="h-[232px] overflow-y-auto pr-1 space-y-2">
             {recentClaims.map((claim) => (
               <div key={claim.id} className="flex items-center justify-between p-2 bg-black/20 rounded border border-border/50">
                 <div className="flex items-center gap-3">

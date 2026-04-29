@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { addDoc, collection, serverTimestamp, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth } from '../context/AuthContext';
+import { recordSystemMetrics } from '../lib/systemMetrics';
 import { Clock, MapPin, CheckCircle2, Navigation } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -52,6 +53,14 @@ export default function ClockIn() {
         timestamp: serverTimestamp(),
         coordinates: coords
       });
+      try {
+        await recordSystemMetrics({
+          clockInCount: type === 'in' ? 1 : 0,
+          clockOutCount: type === 'out' ? 1 : 0
+        });
+      } catch (metricsErr) {
+        console.error('Failed to record clock metrics:', metricsErr);
+      }
       setLastStatus(type);
     } catch (err) {
       console.error("Clock operation failed:", err);

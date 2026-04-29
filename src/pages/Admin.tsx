@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { collection, query, orderBy, limit, onSnapshot, addDoc, serverTimestamp, setDoc, doc, deleteDoc, where, getDocs, updateDoc } from 'firebase/firestore';
-import { createUserWithEmailAndPassword, signOut } from 'firebase/auth';
+import { createUserWithEmailAndPassword, signOut, updatePassword } from 'firebase/auth';
 import { auth, db } from '../lib/firebase';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
@@ -8,7 +8,7 @@ import {
   Users, BarChart3, Clock, AlertCircle, 
   Search, Plus, Filter, Download, 
   Trash2, UserPlus, Mail, Shield, LogOut,
-  Briefcase, Eye, Loader2, TrendingUp
+  Briefcase, Eye, EyeOff, Loader2, TrendingUp
 } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, 
@@ -42,6 +42,39 @@ const getActivationRate = (activation: any) => {
   if (activation?.activationType === 'account-only') return 80;
   return 100;
 };
+
+const normalizeCampaignStatus = (campaign: any) => {
+  const rawStatus = typeof campaign?.status === 'string' ? campaign.status.trim().toLowerCase() : '';
+  if (rawStatus) return rawStatus;
+  if (campaign?.isActive === false) return 'inactive';
+  if (campaign?.id === 'spot' || campaign?.id === 'spot-money' || campaign?.id === 'gumtree') return 'active';
+  return 'inactive';
+};
+
+const getPasswordStatusMeta = (user: any) => {
+  if (user.forcePasswordResetRequired) {
+    return {
+      label: 'Reset Required',
+      detail: 'Must change password on next login',
+      className: 'bg-red-500/10 text-red-500 border-red-500/30'
+    };
+  }
+
+  if (user.passwordMode === 'custom') {
+    return {
+      label: 'Custom',
+      detail: 'User-defined password active',
+      className: 'bg-green-500/10 text-green-400 border-green-500/30'
+    };
+  }
+
+  return {
+    label: 'Generated',
+    detail: 'Admin-issued password active',
+    className: 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+  };
+};
+
 interface LiveStaffStat {
   dailyCount: number;
   totalAccumulated: number;
@@ -77,11 +110,22 @@ export default function Admin() {
   });
   const [loading, setLoading] = useState(false);
   const [generatedCreds, setGeneratedCreds] = useState<{ u: string, p: string, username: string, employeeId: string } | null>(null);
+  const [showSelfPasswordReset, setShowSelfPasswordReset] = useState(false);
+  const [selfPassword, setSelfPassword] = useState('');
+  const [selfPasswordConfirm, setSelfPasswordConfirm] = useState('');
+  const [showSelfPassword, setShowSelfPassword] = useState(false);
+  const [showSelfPasswordConfirm, setShowSelfPasswordConfirm] = useState(false);
+  const [selfPasswordError, setSelfPasswordError] = useState('');
+  const [selfPasswordLoading, setSelfPasswordLoading] = useState(false);
   const [auditLoading, setAuditLoading] = useState(false);
   const [globalDailyCount, setGlobalDailyCount] = useState(0);
   const [globalTotalCount, setGlobalTotalCount] = useState(0);
   const [globalDailyEarnings, setGlobalDailyEarnings] = useState(0);
   const [globalTotalEarnings, setGlobalTotalEarnings] = useState(0);
+  const [dailyLoginCount, setDailyLoginCount] = useState(0);
+  const [totalLoginCount, setTotalLoginCount] = useState(0);
+  const [dailyClockInCount, setDailyClockInCount] = useState(0);
+  const [dailyClockOutCount, setDailyClockOutCount] = useState(0);
   const [staffStats, setStaffStats] = useState<{[key: string]: { daily: number, total: number }}>({});
   const hasRunAdminIdMigration = useRef(false);
 
@@ -89,41 +133,31 @@ export default function Admin() {
 
 
   useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const activationCollections = getAllActivationCollectionNames();
-        const todayKey = getSouthAfricaDateKey();
-        const totalSnaps = await Promise.all(
-          activationCollections.map((collectionName) =>
-            getDocs(query(collection(db, collectionName)))
-          )
-        );
-        const totalDocs = totalSnaps.flatMap((snap) => snap.docs);
-        const dailyDocs = totalDocs.filter((d) => {
-          const data = d.data();
-          const dateKey = data.submissionDateKey || getSouthAfricaDateKeyFromTimestamp(data.timestamp);
-          return dateKey === todayKey;
-        });
+    const todayKey = getSouthAfricaDateKey();
+    const dailyRef = doc(db, 'system_metrics', `daily_${todayKey}`);
+    const overallRef = doc(db, 'system_metrics', 'overall');
 
-        setGlobalDailyCount(dailyDocs.length);
-        setGlobalTotalCount(totalDocs.length);
-        setGlobalDailyEarnings(dailyDocs.reduce((sum, activationDoc) => sum + getActivationRate(activationDoc.data()), 0));
-        setGlobalTotalEarnings(totalDocs.reduce((sum, activationDoc) => sum + getActivationRate(activationDoc.data()), 0));
+    const unsubDaily = onSnapshot(dailyRef, (snap) => {
+      const data = snap.data() || {};
+      setGlobalDailyCount(Number(data.activationsCount || 0));
+      setGlobalDailyEarnings(Number(data.activationsEarnings || 0));
+      setDailyLoginCount(Number(data.loginCount || 0));
+      setDailyClockInCount(Number(data.clockInCount || 0));
+      setDailyClockOutCount(Number(data.clockOutCount || 0));
+    });
 
-        if (activeTab === 'reports' && users.length > 0) {
-          const stats: {[key: string]: { daily: number, total: number }} = {};
-          // To avoid N queries, we can't easily get counts per user in one go with getCountFromServer
-          // But for a reporting dashboard, we might have to. 
-          // For now, let's just use the data that might be on the profile if it was sync'd, 
-          // or do a batch fetch if viable.
-          // Since we already have the activations snapshot (limited to 10), we can't use that.
-        }
-      } catch (err) {
-        console.error("Stats fetch error:", err);
-      }
+    const unsubOverall = onSnapshot(overallRef, (snap) => {
+      const data = snap.data() || {};
+      setGlobalTotalCount(Number(data.totalActivationsCount || 0));
+      setGlobalTotalEarnings(Number(data.totalActivationsEarnings || 0));
+      setTotalLoginCount(Number(data.totalLoginCount || 0));
+    });
+
+    return () => {
+      unsubDaily();
+      unsubOverall();
     };
-    fetchStats();
-  }, [activeTab, users.length]);
+  }, []);
 
   // Live per-user stats for the Reports tab
   useEffect(() => {
@@ -486,6 +520,51 @@ export default function Admin() {
     }
   };
 
+  const handleAdminSelfPasswordReset = async () => {
+    setSelfPasswordError('');
+
+    if (selfPassword.length < 8) {
+      setSelfPasswordError('Password must be at least 8 characters.');
+      return;
+    }
+
+    if (selfPassword !== selfPasswordConfirm) {
+      setSelfPasswordError('Passwords do not match.');
+      return;
+    }
+
+    if (!auth.currentUser || !profile?.uid) {
+      setSelfPasswordError('Session expired. Please sign in again.');
+      return;
+    }
+
+    setSelfPasswordLoading(true);
+    try {
+      await updatePassword(auth.currentUser, selfPassword);
+      await updateDoc(doc(db, 'profiles', profile.uid), {
+        forcePasswordResetRequired: false,
+        passwordSetupPending: false,
+        passwordMode: 'custom',
+        passwordUpdatedAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      setShowSelfPasswordReset(false);
+      setSelfPassword('');
+      setSelfPasswordConfirm('');
+      alert('Your admin password has been updated successfully.');
+    } catch (err: any) {
+      console.error('Admin password reset failed:', err);
+      if (err?.code === 'auth/requires-recent-login') {
+        setSelfPasswordError('For security, please sign in again and retry.');
+      } else {
+        setSelfPasswordError('Failed to update password. Please try again.');
+      }
+    } finally {
+      setSelfPasswordLoading(false);
+    }
+  };
+
   const handleDeleteUser = (id: string, name: string) => {
     console.log("INIT_DELETE triggered for:", { id, name });
     if (!profile || profile.role !== 'admin') {
@@ -579,7 +658,15 @@ export default function Admin() {
     });
 
     const unsubCampaigns = onSnapshot(collection(db, 'campaigns'), (snap) => {
-      setCampaigns(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      setCampaigns(
+        snap.docs.map((campaignDoc) => {
+          const campaign = { id: campaignDoc.id, ...campaignDoc.data() };
+          return {
+            ...campaign,
+            status: normalizeCampaignStatus(campaign)
+          };
+        })
+      );
     });
 
     return () => {
@@ -663,6 +750,9 @@ export default function Admin() {
         username: normalizedUsername,
         employeeId: normalizedEmployeeId,
         role: newUser.role,
+        forcePasswordResetRequired: newUser.role === 'admin' || newUser.role === 'official',
+        passwordSetupPending: newUser.role === 'guest',
+        passwordMode: 'generated',
         campaignId: newUser.campaignId,
         gender: newUser.gender,
         isStakeholder: newUser.isStakeholder,
@@ -769,7 +859,14 @@ export default function Admin() {
           </div>
           
           <button 
-              onClick={() => { signOut(auth); window.location.href = '/'; }}
+              onClick={async () => {
+                navigate('/', { replace: true });
+                try {
+                  await signOut(auth);
+                } catch (err) {
+                  console.error('Sign out failed:', err);
+                }
+              }}
             className="flex items-center gap-3 py-2 text-red-500/60 hover:text-red-500 transition-colors text-sm font-medium mt-4"
           >
             <LogOut size={18} /> Logout
@@ -801,6 +898,12 @@ export default function Admin() {
               className="bna-input w-auto h-auto py-1.5 px-3 flex items-center gap-2"
             >
               <UserPlus size={16} /> Add Employee
+            </button>
+            <button
+              onClick={() => setShowSelfPasswordReset(true)}
+              className="bna-input w-auto h-auto py-1.5 px-3 flex items-center gap-2"
+            >
+              <Shield size={16} /> Reset My Password
             </button>
             <button 
               onClick={performStaffAudit}
@@ -916,6 +1019,7 @@ export default function Admin() {
                     <th className="px-6 py-4 font-medium">Full Name</th>
                     <th className="px-6 py-4 font-medium">Email / Username</th>
                     <th className="px-6 py-4 font-medium">Role</th>
+                    <th className="px-6 py-4 font-medium">Password Security</th>
                     <th className="px-6 py-4 font-medium">Set Role</th>
                     <th className="px-6 py-4 font-medium">Performance</th>
                     <th className="px-6 py-4 font-medium">Status</th>
@@ -931,6 +1035,10 @@ export default function Admin() {
                       u.email?.toLowerCase().includes(searchTerm.toLowerCase())
                     )
                     .map((u, i) => {
+                      const passwordStatus = getPasswordStatusMeta(u);
+                      const updatedAt = u.passwordUpdatedAt?.toDate
+                        ? u.passwordUpdatedAt.toDate().toLocaleDateString()
+                        : 'Not updated';
                       return (
                     <tr key={i} className="hover:bg-white/[0.01] transition-colors">
                       <td className="px-6 py-4">
@@ -950,6 +1058,15 @@ export default function Admin() {
                         }`}>
                           {u.role}
                         </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex flex-col gap-1">
+                          <span className={`w-fit px-2 py-0.5 rounded border text-[10px] font-bold uppercase tracking-wide ${passwordStatus.className}`}>
+                            {passwordStatus.label}
+                          </span>
+                          <span className="text-[10px] text-text-s">{passwordStatus.detail}</span>
+                          <span className="text-[9px] uppercase tracking-wider text-text-s/80">Updated: {updatedAt}</span>
+                        </div>
                       </td>
                       <td className="px-6 py-4">
                         <select
@@ -1016,11 +1133,21 @@ export default function Admin() {
 
         {activeTab === 'reports' && (
           <div className="flex-1 flex flex-col gap-6 overflow-hidden">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
               <div className="bna-card p-6 border-l-4 border-l-accent">
                 <p className="text-[10px] uppercase text-text-s font-bold tracking-widest mb-2">Audit Window</p>
                 <div className="text-2xl font-black uppercase tracking-tighter">Last 24 Hours</div>
                 <p className="text-[10px] text-text-s mt-1 uppercase">Performance Snapshot</p>
+              </div>
+              <div className="bna-card p-6 border-l-4 border-l-blue-500">
+                <p className="text-[10px] uppercase text-text-s font-bold tracking-widest mb-2">Daily Logins</p>
+                <div className="text-2xl font-black uppercase tracking-tighter">{dailyLoginCount}</div>
+                <p className="text-[10px] text-text-s mt-1 uppercase">Today Auth Successes</p>
+              </div>
+              <div className="bna-card p-6 border-l-4 border-l-indigo-500">
+                <p className="text-[10px] uppercase text-text-s font-bold tracking-widest mb-2">Total Logins</p>
+                <div className="text-2xl font-black uppercase tracking-tighter">{totalLoginCount}</div>
+                <p className="text-[10px] text-text-s mt-1 uppercase">All-Time Auth Events</p>
               </div>
               <div className="bna-card p-6 border-l-4 border-l-green-500">
                 <p className="text-[10px] uppercase text-text-s font-bold tracking-widest mb-2">Top Performer</p>
@@ -1047,6 +1174,13 @@ export default function Admin() {
                 <button 
                   onClick={() => {
                     const csv = [
+                      ['SYSTEM DAILY', '', '', '', '', '', '', '', ''],
+                      ['Date', 'Daily Activations', 'Daily Logins', 'Daily Clock-ins', 'Daily Clock-outs', 'Daily Earnings (ZAR)', '', '', ''],
+                      [getSouthAfricaDateKey(), globalDailyCount, dailyLoginCount, dailyClockInCount, dailyClockOutCount, globalDailyEarnings.toFixed(2), '', '', ''],
+                      ['SYSTEM ACCUMULATING', '', '', '', '', '', '', '', ''],
+                      ['Total Activations', 'Total Logins', 'Total Earnings (ZAR)', '', '', '', '', '', ''],
+                      [globalTotalCount, totalLoginCount, globalTotalEarnings.toFixed(2), '', '', '', '', '', ''],
+                      ['', '', '', '', '', '', '', '', ''],
                       ['Employee Name', 'Email', 'Role', 'Zone', 'Daily Count', 'Card Only', 'Card+SIM', 'Total Earnings (ZAR)', 'Status'],
                       ...users.map(u => {
                         const uid = u.id || u.uid;
@@ -1728,6 +1862,94 @@ export default function Admin() {
                   </>
                 )}
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Admin Self Password Reset Modal */}
+      <AnimatePresence>
+        {showSelfPasswordReset && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => !selfPasswordLoading && setShowSelfPasswordReset(false)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 10 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 10 }}
+              className="relative w-full max-w-md bna-card p-6"
+            >
+              <h3 className="text-lg font-bold mb-2 uppercase tracking-tight">Reset Admin Password</h3>
+              <p className="text-xs text-text-s mb-4">Set a new password for your currently signed-in admin account.</p>
+
+              {selfPasswordError && (
+                <div className="bg-red-500/10 border border-red-500/20 text-red-500 p-2 rounded text-xs mb-3">
+                  {selfPasswordError}
+                </div>
+              )}
+
+              <div className="space-y-3">
+                <div className="relative">
+                  <input
+                    type={showSelfPassword ? 'text' : 'password'}
+                    className="bna-input pr-10"
+                    placeholder="New password"
+                    autoComplete="new-password"
+                    value={selfPassword}
+                    onChange={(e) => setSelfPassword(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSelfPassword((prev) => !prev)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-text-s hover:text-accent"
+                    aria-label={showSelfPassword ? 'Hide new password' : 'Show new password'}
+                  >
+                    {showSelfPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </div>
+                <div className="relative">
+                  <input
+                    type={showSelfPasswordConfirm ? 'text' : 'password'}
+                    className="bna-input pr-10"
+                    placeholder="Confirm new password"
+                    autoComplete="new-password"
+                    value={selfPasswordConfirm}
+                    onChange={(e) => setSelfPasswordConfirm(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSelfPasswordConfirm((prev) => !prev)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-text-s hover:text-accent"
+                    aria-label={showSelfPasswordConfirm ? 'Hide confirm password' : 'Show confirm password'}
+                  >
+                    {showSelfPasswordConfirm ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex gap-3 mt-5">
+                <button
+                  type="button"
+                  onClick={() => setShowSelfPasswordReset(false)}
+                  disabled={selfPasswordLoading}
+                  className="flex-1 py-2.5 rounded border border-border text-xs font-bold uppercase tracking-widest hover:bg-white/5 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAdminSelfPasswordReset}
+                  disabled={selfPasswordLoading}
+                  className="flex-1 bna-button py-2.5 h-auto text-xs"
+                >
+                  {selfPasswordLoading ? 'Updating...' : 'Update Password'}
+                </button>
+              </div>
             </motion.div>
           </div>
         )}

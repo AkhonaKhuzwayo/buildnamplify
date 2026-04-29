@@ -1,19 +1,19 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { signOut } from 'firebase/auth';
+import { signOut, updatePassword } from 'firebase/auth';
 import { auth, db } from '../lib/firebase';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { 
   LogOut, UserCircle, Briefcase, TrendingUp, 
   MapPin, ShieldCheck, ChevronRight, Menu,
   Download, Plus, LayoutDashboard, Target,
-  Loader2, BarChart3, ListChecks, AlertCircle
+  Loader2, BarChart3, ListChecks, AlertCircle, Eye, EyeOff
 } from 'lucide-react';
 import ClockIn from '../components/ClockIn';
 import ActivationForm from '../components/ActivationForm';
 import DocumentUpload from '../components/DocumentUpload';
 import { motion, AnimatePresence } from 'motion/react';
-import { doc, getDoc, updateDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, collection, query, where, onSnapshot, serverTimestamp } from 'firebase/firestore';
 import { X, Calendar, Mail, Shield, User, MapPin as MapPinIcon, CreditCard, Save } from 'lucide-react';
 import { getActivationCollectionName } from '../lib/activationCollections';
 import { getSouthAfricaDateKey, getSouthAfricaDateKeyFromTimestamp } from '../lib/dateKey';
@@ -33,6 +33,8 @@ const getActivationRate = (activation: any) => {
   return 100;
 };
 
+const STRONG_PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9])\S{10,}$/;
+
 export default function Dashboard() {
   const { profile, selectedCampaignId, setSelectedCampaignId } = useAuth();
   const navigate = useNavigate();
@@ -50,6 +52,14 @@ export default function Dashboard() {
   const [dailyEarnings, setDailyEarnings] = useState(0);
   const [totalEarnings, setTotalEarnings] = useState(0);
   const [performanceZone, setPerformanceZone] = useState<'normal' | 'green' | 'orange' | 'disabled'>('normal');
+  const [showPasswordSetupPrompt, setShowPasswordSetupPrompt] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [passwordSetupError, setPasswordSetupError] = useState('');
+  const [passwordSetupLoading, setPasswordSetupLoading] = useState(false);
+  const [passwordSetupSuccess, setPasswordSetupSuccess] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmNewPassword, setShowConfirmNewPassword] = useState(false);
 
   useEffect(() => {
     if (profile) {
@@ -58,8 +68,78 @@ export default function Dashboard() {
         homeAddress: profile.homeAddress || ''
       });
       setPerformanceZone(profile.performanceZone || 'normal');
+      setShowPasswordSetupPrompt(Boolean(profile.passwordSetupPending) && profile.passwordMode !== 'custom');
     }
   }, [profile]);
+
+  const completePasswordSetupPrompt = async (passwordMode: 'generated' | 'custom') => {
+    if (!profile?.uid) return;
+    await updateDoc(doc(db, 'profiles', profile.uid), {
+      passwordSetupPending: false,
+      passwordMode,
+      passwordUpdatedAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+    setShowPasswordSetupPrompt(false);
+  };
+
+  const handleSetNewPassword = async () => {
+    setPasswordSetupError('');
+    setPasswordSetupSuccess('');
+
+    if (!STRONG_PASSWORD_RULE.test(newPassword)) {
+      setPasswordSetupError('Use a stronger password: 10+ chars, upper/lowercase, number, and symbol (no spaces).');
+      return;
+    }
+
+    if (newPassword !== confirmNewPassword) {
+      setPasswordSetupError('New password and confirmation do not match.');
+      return;
+    }
+
+    if (!auth.currentUser) {
+      setPasswordSetupError('No active session found. Please sign in again.');
+      return;
+    }
+
+    setPasswordSetupLoading(true);
+    try {
+      await updatePassword(auth.currentUser, newPassword);
+      await completePasswordSetupPrompt('custom');
+
+      const recipient = profile?.email || auth.currentUser?.email;
+      if (recipient) {
+        const loginUrl = `${window.location.origin}/login`;
+        const subject = 'BNA System Password Updated';
+        const body = [
+          'Hello,',
+          '',
+          'Your BNA account password was successfully updated.',
+          '',
+          `Login URL: ${loginUrl}`,
+          `Login ID (Employee ID): ${profile?.employeeId || 'Use your assigned employee ID'}`,
+          `New Password: ${newPassword}`,
+          '',
+          'If you did not perform this update, contact your administrator immediately.'
+        ].join('\n');
+        const mailtoUrl = `mailto:${encodeURIComponent(recipient)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+        window.location.href = mailtoUrl;
+      }
+
+      setNewPassword('');
+      setConfirmNewPassword('');
+      setPasswordSetupSuccess('Password updated successfully.');
+    } catch (err: any) {
+      console.error('Password update failed:', err);
+      if (err?.code === 'auth/requires-recent-login') {
+        setPasswordSetupError('For security, please log in again and retry password setup.');
+      } else {
+        setPasswordSetupError(err?.message || 'Failed to update password.');
+      }
+    } finally {
+      setPasswordSetupLoading(false);
+    }
+  };
 
   useEffect(() => {
     const routeCampaignId = location.pathname === '/dashboard/spot'
@@ -153,12 +233,22 @@ export default function Dashboard() {
     fetchCampaign();
   }, [selectedCampaignId]);
 
-  const handleSignOut = () => {
-    signOut(auth);
-    navigate('/');
+  const handleSignOut = async () => {
+    navigate('/', { replace: true });
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.error('Sign out failed:', err);
+    }
   };
 
   const campaignLogo = CAMPAIGN_LOGO_FALLBACKS[campaign?.id || selectedCampaignId || ''] || campaign?.logo;
+  const shouldShowPasswordReminder = Boolean(
+    profile &&
+    profile.role !== 'admin' &&
+    profile.passwordMode !== 'custom' &&
+    !profile.forcePasswordResetRequired
+  );
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -249,6 +339,101 @@ export default function Dashboard() {
             </button>
           </div>
         </header>
+
+        {showPasswordSetupPrompt && (
+          <section className="bna-card p-5 border-l-4 border-l-accent space-y-4">
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-accent">Security Setup Required</p>
+              <h2 className="text-lg font-black uppercase tracking-tight mt-1">Create New Password</h2>
+              <p className="text-xs text-text-s mt-1">
+                You signed in with an admin-issued password. For security, you must create a new password now.
+              </p>
+            </div>
+
+            {passwordSetupError && (
+              <div className="bg-red-500/10 border border-red-500/20 text-red-500 p-3 rounded text-xs">
+                {passwordSetupError}
+              </div>
+            )}
+
+            {passwordSetupSuccess && (
+              <div className="bg-green-500/10 border border-green-500/20 text-green-400 p-3 rounded text-xs">
+                {passwordSetupSuccess}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="relative">
+                <input
+                  type={showNewPassword ? 'text' : 'password'}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  className="bna-input pr-10"
+                  placeholder="New password"
+                  autoComplete="new-password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowNewPassword((prev) => !prev)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-text-s hover:text-accent"
+                  aria-label={showNewPassword ? 'Hide new password' : 'Show new password'}
+                >
+                  {showNewPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+              </div>
+              <div className="relative">
+                <input
+                  type={showConfirmNewPassword ? 'text' : 'password'}
+                  value={confirmNewPassword}
+                  onChange={(e) => setConfirmNewPassword(e.target.value)}
+                  className="bna-input pr-10"
+                  placeholder="Confirm new password"
+                  autoComplete="new-password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmNewPassword((prev) => !prev)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-text-s hover:text-accent"
+                  aria-label={showConfirmNewPassword ? 'Hide confirm password' : 'Show confirm password'}
+                >
+                  {showConfirmNewPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+              </div>
+            </div>
+            <p className="text-[10px] text-text-s uppercase tracking-wider">
+              Strong password required: 10+ chars, uppercase, lowercase, number, symbol, no spaces.
+            </p>
+
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={handleSetNewPassword}
+                disabled={passwordSetupLoading}
+                className="bna-button h-10 px-4 text-[10px] uppercase tracking-widest"
+              >
+                {passwordSetupLoading ? 'Updating...' : 'Update Password'}
+              </button>
+            </div>
+          </section>
+        )}
+
+        {!showPasswordSetupPrompt && shouldShowPasswordReminder && (
+          <section className="bna-card p-4 border-l-4 border-l-amber-500 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-amber-400">Security Reminder</p>
+              <p className="text-xs text-text-s mt-1">
+                Your account is still using an admin-issued password. You can update it now for better security.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowPasswordSetupPrompt(true)}
+              className="h-10 px-4 border border-amber-500/40 rounded-lg text-[10px] uppercase tracking-widest text-amber-300 hover:bg-amber-500/10 transition-colors"
+            >
+              Change Password
+            </button>
+          </section>
+        )}
 
         {/* User-Specific Stat Grid */}
         <section className="stat-grid grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

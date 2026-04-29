@@ -1,18 +1,24 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
+import { recordSystemMetrics } from '../lib/systemMetrics';
 import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { ShieldAlert, Eye, EyeOff, ArrowLeft } from 'lucide-react';
 import { motion } from 'motion/react';
 
 export default function Login() {
+  const MAX_ATTEMPTS = 5;
+  const COOLDOWN_SECONDS = 30;
   const [searchParams] = useSearchParams();
   const [employeeId, setEmployeeId] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [cooldownUntilMs, setCooldownUntilMs] = useState<number | null>(null);
+  const [secondsRemaining, setSecondsRemaining] = useState(0);
   const navigate = useNavigate();
 
   const selectedRole = (searchParams.get('role') || '').toLowerCase();
@@ -26,8 +32,32 @@ export default function Login() {
   const backTarget = auth.currentUser ? '/home' : '/';
   const backLabel = auth.currentUser ? 'Go To Dashboard' : 'Back To Landing';
 
+  useEffect(() => {
+    if (!cooldownUntilMs) {
+      setSecondsRemaining(0);
+      return;
+    }
+
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil((cooldownUntilMs - Date.now()) / 1000));
+      setSecondsRemaining(remaining);
+      if (remaining === 0) {
+        setCooldownUntilMs(null);
+        setFailedAttempts(0);
+      }
+    };
+
+    tick();
+    const intervalId = setInterval(tick, 1000);
+    return () => clearInterval(intervalId);
+  }, [cooldownUntilMs]);
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (cooldownUntilMs && Date.now() < cooldownUntilMs) {
+      setError(`Too many failed attempts. Try again in ${secondsRemaining}s.`);
+      return;
+    }
     setLoading(true);
     setError('');
     try {
@@ -41,9 +71,17 @@ export default function Login() {
       }
       const userEmail = snap.docs[0].data().email as string;
       await signInWithEmailAndPassword(auth, userEmail, password);
+      setFailedAttempts(0);
+      setCooldownUntilMs(null);
+      try {
+        await recordSystemMetrics({ loginCount: 1 });
+      } catch (metricsErr) {
+        console.error('Failed to record login metrics:', metricsErr);
+      }
       navigate('/home');
     } catch (err: any) {
-      console.error('Login Error:', err);
+      const nextAttempts = failedAttempts + 1;
+      setFailedAttempts(nextAttempts);
       let message = 'Failed to login';
       if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password') {
         message = 'Incorrect password. Please try again.';
@@ -52,11 +90,20 @@ export default function Login() {
       } else if (err.code === 'auth/too-many-requests') {
         message = 'Too many failed attempts. Please wait before trying again.';
       } else {
-        message = err.message || 'Failed to login. Please check your internet connection.';
+        message = 'Failed to login. Please check your credentials and internet connection.';
       }
-      setError(message);
+
+      if (nextAttempts >= MAX_ATTEMPTS) {
+        const until = Date.now() + COOLDOWN_SECONDS * 1000;
+        setCooldownUntilMs(until);
+        setError(`Too many failed attempts. Try again in ${COOLDOWN_SECONDS}s.`);
+      } else {
+        setError(message);
+      }
       setLoading(false);
+      return;
     }
+    setLoading(false);
   };
 
   return (
@@ -119,10 +166,10 @@ export default function Login() {
           </div>
           <button 
             type="submit" 
-            disabled={loading}
+            disabled={loading || (cooldownUntilMs !== null && secondsRemaining > 0)}
             className="w-full bna-button mt-4 h-11 uppercase tracking-widest text-xs font-bold"
           >
-            {loading ? 'Authenticating...' : 'Secure Login'}
+            {loading ? 'Authenticating...' : (cooldownUntilMs && secondsRemaining > 0 ? `Wait ${secondsRemaining}s` : 'Secure Login')}
           </button>
           <button
             type="button"

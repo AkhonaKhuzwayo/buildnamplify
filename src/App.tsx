@@ -14,6 +14,7 @@ import Admin from './pages/Admin';
 import ProfileError from './pages/ProfileError';
 import Register from './pages/Register';
 import RoleEntry from './pages/RoleEntry';
+import ForcePasswordReset from './pages/ForcePasswordReset';
 
 function getDashboardPathForCampaign(campaignId?: string | null) {
   if (campaignId === 'spot-money' || campaignId === 'spot') return '/dashboard/spot';
@@ -30,8 +31,6 @@ function ProtectedRoute({ children, allowedRoles }: { children: React.ReactNode,
     const t = setTimeout(() => setShowTimeout(true), 5000);
     return () => clearTimeout(t);
   }, [loading]);
-
-  console.log('ProtectedRoute state:', { loading, user: user?.email, profile });
 
   if (loading) return <div className="min-h-screen bg-bg flex items-center justify-center text-accent">
     <div className="flex flex-col items-center gap-4">
@@ -61,6 +60,13 @@ function ProtectedRoute({ children, allowedRoles }: { children: React.ReactNode,
 
   const path = window.location.pathname;
   const isCampaignDashboardPath = path === '/dashboard/spot' || path === '/dashboard/gumtree';
+
+  if (
+    (profile.role === 'admin' || profile.role === 'official') &&
+    profile.forcePasswordResetRequired === true
+  ) {
+    return <ForcePasswordReset />;
+  }
 
   // If Official or Guest hasn't picked a campaign, force them to Selector
   if ((profile.role === 'official' || profile.role === 'guest') && !selectedCampaignId && path !== '/selector' && !isCampaignDashboardPath) {
@@ -128,6 +134,12 @@ export default function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
             <Route path="/" element={<RoleEntry />} />
+
+            <Route path="/password-reset" element={
+              <ProtectedRoute allowedRoles={['admin', 'official']}>
+                <ForcePasswordReset />
+              </ProtectedRoute>
+            } />
             
             <Route path="/home" element={<ProtectedRoute><HomeRedirect /></ProtectedRoute>} />
             

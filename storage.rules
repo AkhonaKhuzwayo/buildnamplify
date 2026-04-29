@@ -1,0 +1,40 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function profileDocPath() {
+      return '/databases/(default)/documents/profiles/' + request.auth.uid;
+    }
+
+    function hasRole(role) {
+      return isSignedIn() &&
+             firestore.exists(profileDocPath()) &&
+             firestore.get(profileDocPath()).data.role == role;
+    }
+
+    function isAdminOrOfficial() {
+      return hasRole('admin') || hasRole('official');
+    }
+
+    // User compliance docs are stored at: documents/{userId}/{filename}
+    match /documents/{userId}/{fileName} {
+      // Owner can upload/update/delete own docs. Restrict size and type for safety.
+      allow write: if isSignedIn() &&
+                   request.auth.uid == userId &&
+                   request.resource.size <= 5 * 1024 * 1024 &&
+                   request.resource.contentType.matches('image/.*|application/pdf');
+
+      // Owner can read own docs; admin/official can review any employee docs.
+      allow read: if isSignedIn() &&
+                  (request.auth.uid == userId || isAdminOrOfficial());
+    }
+
+    // Deny all other Storage paths by default.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

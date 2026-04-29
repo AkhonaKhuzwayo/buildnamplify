@@ -123,5 +123,11 @@ service cloud.firestore {
       allow create: if isSignedIn() && isValidDoc(request.resource.data);
       allow read: if isAdmin() || isOfficial() || (resource.data.userId == request.auth.uid);
     }
+
+    // --- Aggregated System Metrics (for high-scale reporting) ---
+    match /system_metrics/{metricId} {
+      allow read: if isAdmin();
+      allow create, update: if isSignedIn();
+    }
   }
 }
