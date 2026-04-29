@@ -91,7 +91,22 @@ export default function Selector() {
     }
   };
 
-  const handleSelect = (id: string) => {
+  const handleSelect = async (id: string) => {
+    try {
+      if (profile?.uid) {
+        await setDoc(
+          doc(db, 'profiles', profile.uid),
+          {
+            campaignId: id,
+            updatedAt: serverTimestamp()
+          },
+          { merge: true }
+        );
+      }
+    } catch (err) {
+      console.error('Failed to persist selected campaign on profile:', err);
+    }
+
     setSelectedCampaignId(id);
     navigate(getDashboardPathForCampaign(id));
   };

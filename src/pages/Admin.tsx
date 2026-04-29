@@ -5,15 +5,11 @@ import { auth, db } from '../lib/firebase';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { 
-  Users, BarChart3, Clock, AlertCircle, 
-  Search, Plus, Filter, Download, 
-  Trash2, UserPlus, Mail, Shield, LogOut,
+  Users, BarChart3, AlertCircle,
+  Search, Plus, Download,
+  Trash2, UserPlus, Shield, LogOut,
   Briefcase, Eye, EyeOff, Loader2, TrendingUp
 } from 'lucide-react';
-import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, 
-  Tooltip, ResponsiveContainer, AreaChart, Area 
-} from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
 import { getAllActivationCollectionNames } from '../lib/activationCollections';
 import { getSouthAfricaDateKey, getSouthAfricaDateKeyFromTimestamp } from '../lib/dateKey';
@@ -23,16 +19,6 @@ const CAMPAIGN_LOGO_FALLBACKS: Record<string, string> = {
   spot: '/spot-logo.jpeg',
   gumtree: '/gumtree-logo.jpeg'
 };
-
-const data = [
-  { name: 'Mon', count: 40 },
-  { name: 'Tue', count: 70 },
-  { name: 'Wed', count: 120 },
-  { name: 'Thu', count: 90 },
-  { name: 'Fri', count: 150 },
-  { name: 'Sat', count: 110 },
-  { name: 'Sun', count: 80 },
-];
 
 const getActivationRate = (activation: any) => {
   if (typeof activation?.rate === 'number') return activation.rate;
@@ -75,6 +61,16 @@ const getPasswordStatusMeta = (user: any) => {
   };
 };
 
+const getEffectivePerformanceZone = (user: any): 'normal' | 'green' | 'orange' | 'disabled' => {
+  if (FORCE_NORMAL_PERFORMANCE && user?.role !== 'admin') return 'normal';
+  if (user?.isActive === false) return 'disabled';
+  if (user?.performanceZone === 'disabled') return 'orange';
+  if (user?.performanceZone === 'green' || user?.performanceZone === 'orange' || user?.performanceZone === 'normal') {
+    return user.performanceZone;
+  }
+  return 'normal';
+};
+
 interface LiveStaffStat {
   dailyCount: number;
   totalAccumulated: number;
@@ -82,6 +78,29 @@ interface LiveStaffStat {
   cardSimCount: number;
   totalEarnings: number;
 }
+
+const REQUIRED_DOCUMENT_TYPES = [
+  { label: 'ID Copy', value: 'ID' },
+  { label: 'Proof of Bank', value: 'Bank Proof' },
+  { label: 'Proof of Address', value: 'Residence' },
+  { label: 'Signed Contract', value: 'Contract' }
+] as const;
+
+const AUDIT_WINDOW_DAYS = 4;
+const MIN_DAILY_TARGET = 8;
+const FORCE_NORMAL_PERFORMANCE = true;
+
+const normalizeCampaignId = (campaignId?: string | null) => {
+  const normalized = (campaignId || '').trim().toLowerCase();
+  if (!normalized) return '';
+  if (normalized.includes('spot')) return 'spot';
+  if (normalized.includes('gumtree')) return 'gumtree';
+  return normalized;
+};
+
+const isAssignedToCampaign = (userCampaignId?: string | null, campaignId?: string | null) => {
+  return normalizeCampaignId(userCampaignId) === normalizeCampaignId(campaignId);
+};
 
 export default function Admin() {
   const { profile } = useAuth();
@@ -95,6 +114,9 @@ export default function Admin() {
   const [selectedUser, setSelectedUser] = useState<any | null>(null);
   const [selectedUserDocs, setSelectedUserDocs] = useState<any[]>([]);
   const [userToDelete, setUserToDelete] = useState<any | null>(null);
+  const [selectedActivation, setSelectedActivation] = useState<any | null>(null);
+  const [selectedUserClockIns, setSelectedUserClockIns] = useState<any[]>([]);
+  const [clockHistoryFilter, setClockHistoryFilter] = useState<'today' | 'week' | 'all'>('all');
   const [newUser, setNewUser] = useState({
     email: '',
     password: '',
@@ -126,8 +148,9 @@ export default function Admin() {
   const [totalLoginCount, setTotalLoginCount] = useState(0);
   const [dailyClockInCount, setDailyClockInCount] = useState(0);
   const [dailyClockOutCount, setDailyClockOutCount] = useState(0);
-  const [staffStats, setStaffStats] = useState<{[key: string]: { daily: number, total: number }}>({});
+  const [latestClockCampaignByUser, setLatestClockCampaignByUser] = useState<Record<string, string>>({});
   const hasRunAdminIdMigration = useRef(false);
+  const hasRunPerformanceZoneMigration = useRef(false);
 
   const [liveReportStats, setLiveReportStats] = useState<Record<string, LiveStaffStat>>({});
 
@@ -211,20 +234,19 @@ export default function Admin() {
         const stats = await getStaffPerformanceStats(id);
         
         let zone: 'normal' | 'green' | 'orange' | 'disabled' = 'normal';
-        let active = user.isActive;
+        const active = user.isActive !== false;
         
-        if (stats.misses >= 4) {
-          zone = 'disabled';
-          active = false;
-        } else if (stats.misses >= 3) {
-          zone = 'orange';
-          active = true;
-        } else if (stats.misses >= 1) {
-          zone = 'green';
-          active = true;
-        } else {
+        if (FORCE_NORMAL_PERFORMANCE) {
           zone = 'normal';
-          active = true;
+        } else {
+          // Performance audits should not auto-disable accounts; disabling remains a manual admin action.
+          if (stats.misses >= 3) {
+            zone = 'orange';
+          } else if (stats.misses >= 1) {
+            zone = 'green';
+          } else {
+            zone = 'normal';
+          }
         }
         
         await updateDoc(doc(db, 'profiles', id), {
@@ -281,11 +303,11 @@ export default function Admin() {
     const dailyCount = dayCounts[todayKey] || 0;
 
     let misses = 0;
-    for (let i = 1; i <= 4; i++) {
+    for (let i = 1; i <= AUDIT_WINDOW_DAYS; i++) {
         const checkDay = new Date(today);
         checkDay.setDate(checkDay.getDate() - i);
         const key = getSouthAfricaDateKey(checkDay);
-        if ((dayCounts[key] || 0) < 30) {
+      if ((dayCounts[key] || 0) < MIN_DAILY_TARGET) {
             misses++;
         }
     }
@@ -627,6 +649,56 @@ export default function Admin() {
   }, [users, profile]);
 
   useEffect(() => {
+    if (hasRunPerformanceZoneMigration.current) return;
+    if (!profile || profile.role !== 'admin') return;
+    if (users.length === 0) return;
+
+    hasRunPerformanceZoneMigration.current = true;
+
+    const migrateLegacyPerformanceZones = async () => {
+      try {
+        const staleUsers = users.filter((u) => {
+          if (u.role === 'admin') return false;
+          if (!(u.id || u.uid)) return false;
+          if (FORCE_NORMAL_PERFORMANCE) return u.performanceZone !== 'normal';
+          return u.isActive !== false && u.performanceZone === 'disabled';
+        });
+
+        if (staleUsers.length === 0) return;
+
+        await Promise.all(
+          staleUsers.map((u) => {
+            const userId = u.id || u.uid;
+            return updateDoc(doc(db, 'profiles', userId), {
+              performanceZone: FORCE_NORMAL_PERFORMANCE ? 'normal' : 'orange',
+              updatedAt: serverTimestamp()
+            });
+          })
+        );
+      } catch (err) {
+        console.error('Legacy performance zone migration failed:', err);
+      }
+    };
+
+    migrateLegacyPerformanceZones();
+  }, [users, profile]);
+
+  useEffect(() => {
+    const unsubClockIns = onSnapshot(
+      query(collection(db, 'clock-ins'), orderBy('timestamp', 'desc'), limit(1000)),
+      (snap) => {
+        const byUser: Record<string, string> = {};
+        snap.docs.forEach((clockDoc) => {
+          const data = clockDoc.data() as any;
+          const uid = (data.userId || '').toString();
+          const campaignId = (data.campaignId || '').toString();
+          if (!uid || !campaignId) return;
+          if (!byUser[uid]) byUser[uid] = campaignId;
+        });
+        setLatestClockCampaignByUser(byUser);
+      }
+    );
+
     const activationCollections = getAllActivationCollectionNames();
     const activationBatches: Record<string, any[]> = {};
 
@@ -670,11 +742,18 @@ export default function Admin() {
     });
 
     return () => {
+      unsubClockIns();
       activationUnsubs.forEach((unsub) => unsub());
       unsubUsers();
       unsubCampaigns();
     };
   }, []);
+
+  const getEffectiveUserCampaignId = (user: any) => {
+    const uid = (user.id || user.uid || '').toString();
+    if (uid && latestClockCampaignByUser[uid]) return latestClockCampaignByUser[uid];
+    return user.campaignId || null;
+  };
 
   useEffect(() => {
     if (selectedUser) {
@@ -689,6 +768,27 @@ export default function Admin() {
     } else {
       setSelectedUserDocs([]);
     }
+  }, [selectedUser]);
+
+  useEffect(() => {
+    if (!selectedUser) {
+      setSelectedUserClockIns([]);
+      return;
+    }
+
+    const uid = selectedUser.uid || selectedUser.id;
+    const q = query(
+      collection(db, 'clock-ins'),
+      where('userId', '==', uid),
+      orderBy('timestamp', 'desc'),
+      limit(30)
+    );
+
+    const unsub = onSnapshot(q, (snap) => {
+      setSelectedUserClockIns(snap.docs.map((clockDoc) => ({ id: clockDoc.id, ...clockDoc.data() })));
+    });
+
+    return () => unsub();
   }, [selectedUser]);
 
   const handleAddUser = async (e: React.FormEvent) => {
@@ -799,6 +899,57 @@ export default function Admin() {
       setLoading(false);
     }
   };
+
+  const getFilteredClockHistory = () => {
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const startOfWeekWindow = startOfToday - (6 * 24 * 60 * 60 * 1000);
+
+    return selectedUserClockIns.filter((entry) => {
+      const entryMs = entry.timestamp?.toDate ? entry.timestamp.toDate().getTime() : 0;
+      if (!entryMs) return false;
+      if (clockHistoryFilter === 'today') return entryMs >= startOfToday;
+      if (clockHistoryFilter === 'week') return entryMs >= startOfWeekWindow;
+      return true;
+    });
+  };
+
+  const exportSelectedUserAttendanceCsv = () => {
+    if (!selectedUser) return;
+
+    const filteredEntries = getFilteredClockHistory();
+    if (filteredEntries.length === 0) {
+      alert('No attendance records available for the selected filter.');
+      return;
+    }
+
+    const rows = filteredEntries.map((entry) => [
+      selectedUser.displayName || 'Unknown',
+      selectedUser.employeeId || selectedUser.uid || selectedUser.id || '',
+      (entry.type || '').toString().toUpperCase(),
+      entry.location || '',
+      entry.campaignId || '',
+      entry.timestamp?.toDate ? entry.timestamp.toDate().toISOString() : ''
+    ]);
+
+    const csv = [
+      ['Employee Name', 'Employee ID', 'Type', 'Location', 'Campaign ID', 'Timestamp (ISO)'],
+      ...rows
+    ].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.setAttribute('hidden', '');
+    a.setAttribute('href', url);
+    a.setAttribute('download', `attendance_${selectedUser.employeeId || selectedUser.id || 'user'}_${clockHistoryFilter}_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  };
+
+  const filteredClockHistory = getFilteredClockHistory();
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -957,6 +1108,7 @@ export default function Admin() {
                         <th className="px-4 py-3 font-medium">Type</th>
                         <th className="px-4 py-3 font-medium">Rate</th>
                         <th className="px-4 py-3 font-medium">Employee</th>
+                        <th className="px-4 py-3 font-medium">Photos</th>
                         <th className="px-4 py-3 font-medium text-right">Time</th>
                       </tr>
                     </thead>
@@ -973,6 +1125,18 @@ export default function Admin() {
                           </td>
                           <td className="px-4 py-3 text-accent font-bold font-mono">R{act.rate ?? (act.activationType === 'card-sim' ? 110 : 100)}.00</td>
                           <td className="px-4 py-3">{act.userName || 'K. Molefe'}</td>
+                          <td className="px-4 py-3">
+                            {act.prizePhoto || act.summaryPhoto ? (
+                              <button
+                                onClick={() => setSelectedActivation(act)}
+                                className="text-[10px] px-2 py-1 rounded bg-accent/10 text-accent hover:bg-accent/20 font-bold uppercase tracking-wide"
+                              >
+                                View
+                              </button>
+                            ) : (
+                              <span className="text-[10px] text-text-s">N/A</span>
+                            )}
+                          </td>
                           <td className="px-4 py-3 text-right text-accent/80">{act.timestamp?.toDate ? act.timestamp.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Pending'}</td>
                         </tr>
                       ))}
@@ -1036,6 +1200,7 @@ export default function Admin() {
                     )
                     .map((u, i) => {
                       const passwordStatus = getPasswordStatusMeta(u);
+                      const effectiveZone = getEffectivePerformanceZone(u);
                       const updatedAt = u.passwordUpdatedAt?.toDate
                         ? u.passwordUpdatedAt.toDate().toLocaleDateString()
                         : 'Not updated';
@@ -1082,18 +1247,18 @@ export default function Admin() {
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-2">
                           <div className={`w-2 h-2 rounded-full ${
-                            u.performanceZone === 'disabled' ? 'bg-red-500 shadow-[0_0_5px_red]' :
-                            u.performanceZone === 'orange' ? 'bg-orange-500 shadow-[0_0_5px_orange]' :
-                            u.performanceZone === 'green' ? 'bg-green-500 shadow-[0_0_5px_green]' :
+                            effectiveZone === 'disabled' ? 'bg-red-500 shadow-[0_0_5px_red]' :
+                            effectiveZone === 'orange' ? 'bg-orange-500 shadow-[0_0_5px_orange]' :
+                            effectiveZone === 'green' ? 'bg-green-500 shadow-[0_0_5px_green]' :
                             'bg-accent'
                           }`} />
                           <span className={`text-[10px] font-bold uppercase tracking-wider ${
-                            u.performanceZone === 'disabled' ? 'text-red-500' :
-                            u.performanceZone === 'orange' ? 'text-orange-500' :
-                            u.performanceZone === 'green' ? 'text-green-500' :
+                            effectiveZone === 'disabled' ? 'text-red-500' :
+                            effectiveZone === 'orange' ? 'text-orange-500' :
+                            effectiveZone === 'green' ? 'text-green-500' :
                             'text-accent'
                           }`}>
-                            {u.performanceZone || 'Normal'}
+                            {effectiveZone}
                           </span>
                         </div>
                       </td>
@@ -1159,7 +1324,10 @@ export default function Admin() {
               <div className="bna-card p-6 border-l-4 border-l-red-500">
                 <p className="text-[10px] uppercase text-text-s font-bold tracking-widest mb-2">At-Risk Accounts</p>
                 <div className="text-2xl font-black uppercase tracking-tighter">
-                  {users.filter(u => u.performanceZone === 'orange' || u.performanceZone === 'disabled').length}
+                  {users.filter(u => {
+                    const zone = getEffectivePerformanceZone(u);
+                    return zone === 'orange' || zone === 'disabled';
+                  }).length}
                 </div>
                 <p className="text-[10px] text-text-s mt-1 uppercase">Below Threshold Balance</p>
               </div>
@@ -1185,8 +1353,9 @@ export default function Admin() {
                       ...users.map(u => {
                         const uid = u.id || u.uid;
                         const ls: LiveStaffStat = liveReportStats[uid] || { dailyCount: 0, totalAccumulated: 0, cardOnlyCount: 0, cardSimCount: 0, totalEarnings: 0 };
+                        const zone = getEffectivePerformanceZone(u);
                         return [
-                          u.displayName, u.email, u.role, u.performanceZone || 'Normal',
+                          u.displayName, u.email, u.role, zone,
                           ls.dailyCount ?? 0, ls.cardOnlyCount ?? 0, ls.cardSimCount ?? 0,
                           (ls.totalEarnings ?? 0).toFixed(2), u.isActive ? 'Active' : 'Disabled'
                         ];
@@ -1224,6 +1393,7 @@ export default function Admin() {
                   <tbody className="divide-y divide-border">
                     {users.map((u, i) => {
                       const uid = u.id || u.uid;
+                      const zone = getEffectivePerformanceZone(u);
                       const ls: LiveStaffStat = liveReportStats[uid] ?? { dailyCount: 0, totalAccumulated: 0, cardOnlyCount: 0, cardSimCount: 0, totalEarnings: 0 };
                       return (
                       <tr key={i} className="hover:bg-white/[0.05] transition-all group">
@@ -1240,12 +1410,12 @@ export default function Admin() {
                         <td className="px-6 py-4 font-mono text-base text-green-400 font-bold">R{ls.totalEarnings.toFixed(2)}</td>
                         <td className="px-6 py-4">
                           <span className={`px-2 py-0.5 rounded-[2px] font-mono text-[10px] border ${
-                            u.performanceZone === 'disabled' ? 'border-red-500 text-red-500 bg-red-500/10' :
-                            u.performanceZone === 'orange' ? 'border-orange-500 text-orange-500 bg-orange-500/10' :
-                            u.performanceZone === 'green' ? 'border-green-500 text-green-500 bg-green-500/10' :
+                            zone === 'disabled' ? 'border-red-500 text-red-500 bg-red-500/10' :
+                            zone === 'orange' ? 'border-orange-500 text-orange-500 bg-orange-500/10' :
+                            zone === 'green' ? 'border-green-500 text-green-500 bg-green-500/10' :
                             'border-accent text-accent bg-accent/10'
                           }`}>
-                            {u.performanceZone || 'Normal'}
+                            {zone}
                           </span>
                         </td>
                         <td className="px-6 py-4">
@@ -1356,8 +1526,12 @@ export default function Admin() {
                 <button
                   onClick={() => {
                     const rows = campaigns.map(c => {
-                      const assignedOfficials = users.filter(u => u.role === 'official' && u.campaignId === c.id && u.isActive !== false).length;
-                      const assignedGuests = users.filter(u => u.role === 'guest' && u.campaignId === c.id && u.isActive !== false).length;
+                      const assignedOfficials = users.filter(
+                        u => u.role === 'official' && isAssignedToCampaign(getEffectiveUserCampaignId(u), c.id) && u.isActive !== false
+                      ).length;
+                      const assignedGuests = users.filter(
+                        u => u.role === 'guest' && isAssignedToCampaign(getEffectiveUserCampaignId(u), c.id) && u.isActive !== false
+                      ).length;
                       return [c.name, c.status || 'unknown', assignedOfficials, assignedGuests, assignedOfficials + assignedGuests];
                     });
                     const csv = [
@@ -1393,8 +1567,12 @@ export default function Admin() {
                   </thead>
                   <tbody className="divide-y divide-border">
                     {campaigns.map((campaign, i) => {
-                      const assignedOfficials = users.filter(u => u.role === 'official' && u.campaignId === campaign.id && u.isActive !== false).length;
-                      const assignedGuests = users.filter(u => u.role === 'guest' && u.campaignId === campaign.id && u.isActive !== false).length;
+                      const assignedOfficials = users.filter(
+                        u => u.role === 'official' && isAssignedToCampaign(getEffectiveUserCampaignId(u), campaign.id) && u.isActive !== false
+                      ).length;
+                      const assignedGuests = users.filter(
+                        u => u.role === 'guest' && isAssignedToCampaign(getEffectiveUserCampaignId(u), campaign.id) && u.isActive !== false
+                      ).length;
                       return (
                         <tr key={i} className="hover:bg-white/[0.01] transition-colors">
                           <td className="px-6 py-4 font-bold">{campaign.name}</td>
@@ -1508,11 +1686,17 @@ export default function Admin() {
                 <div className="pt-4">
                   <label className="text-[10px] uppercase text-text-s font-bold tracking-widest block mb-2">Verification Documents</label>
                   <div className="grid grid-cols-2 gap-2">
-                    {['ID Copy', 'Proof of Bank', 'Proof of Address', 'Signed Contract'].map(type => {
-                      const doc = selectedUserDocs.find(d => d.type === type);
+                    {REQUIRED_DOCUMENT_TYPES.map((docType) => {
+                      const doc = [...selectedUserDocs]
+                        .filter((d) => d.type === docType.value || d.type === docType.label || d.label === docType.label)
+                        .sort((a, b) => {
+                          const aMs = a.timestamp?.toDate ? a.timestamp.toDate().getTime() : 0;
+                          const bMs = b.timestamp?.toDate ? b.timestamp.toDate().getTime() : 0;
+                          return bMs - aMs;
+                        })[0];
                       return (
-                        <div key={type} className={`p-2 rounded border text-[10px] flex items-center justify-between ${doc ? 'border-accent/30 bg-accent/5' : 'border-white/5 opacity-50'}`}>
-                          <span className="font-bold">{type}</span>
+                        <div key={docType.value} className={`p-2 rounded border text-[10px] flex items-center justify-between ${doc ? 'border-accent/30 bg-accent/5' : 'border-white/5 opacity-50'}`}>
+                          <span className="font-bold">{docType.label}</span>
                           {doc ? (
                             <a href={doc.url} target="_blank" rel="noreferrer" className="text-accent hover:underline flex items-center gap-1">
                               View <Download size={10} />
@@ -1525,6 +1709,56 @@ export default function Admin() {
                     })}
                   </div>
                 </div>
+
+                <div className="pt-4 border-t border-border/60">
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <label className="text-[10px] uppercase text-text-s font-bold tracking-widest block">Clock In / Out History</label>
+                    <button
+                      onClick={exportSelectedUserAttendanceCsv}
+                      className="text-[10px] px-2 py-1 rounded border border-accent/40 text-accent hover:bg-accent/10 font-bold uppercase tracking-wide"
+                    >
+                      Export CSV
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2 mb-3">
+                    {[
+                      { label: 'Today', value: 'today' as const },
+                      { label: 'This Week', value: 'week' as const },
+                      { label: 'All', value: 'all' as const }
+                    ].map((option) => (
+                      <button
+                        key={option.value}
+                        onClick={() => setClockHistoryFilter(option.value)}
+                        className={`text-[10px] px-2 py-1 rounded border font-bold uppercase tracking-wide ${
+                          clockHistoryFilter === option.value
+                            ? 'border-accent/50 bg-accent/10 text-accent'
+                            : 'border-border text-text-s hover:border-accent/30'
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+                    {filteredClockHistory.length > 0 ? (
+                      filteredClockHistory.map((entry) => (
+                        <div key={entry.id} className="p-2 rounded border border-border/70 bg-white/[0.02] flex items-start justify-between gap-3">
+                          <div>
+                            <p className={`text-[10px] font-bold uppercase tracking-widest ${entry.type === 'in' ? 'text-green-400' : 'text-red-400'}`}>
+                              {entry.type === 'in' ? 'Clock In' : 'Clock Out'}
+                            </p>
+                            <p className="text-[10px] text-text-s mt-1">{entry.location || 'Unknown location'}</p>
+                          </div>
+                          <p className="text-[10px] text-text-s text-right">
+                            {entry.timestamp?.toDate ? entry.timestamp.toDate().toLocaleString() : 'Pending'}
+                          </p>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-[10px] text-text-s italic">No clock-in records found for this filter.</p>
+                    )}
+                  </div>
+                </div>
               </div>
 
               <div className="pt-8">
@@ -1534,6 +1768,61 @@ export default function Admin() {
                 >
                   Close Profile
                 </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Activation Photos Modal */}
+      <AnimatePresence>
+        {selectedActivation && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSelectedActivation(null)}
+              className="absolute inset-0 bg-black/85 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 10 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 10 }}
+              className="relative w-full max-w-3xl max-h-[90vh] bna-card p-6 overflow-y-auto"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-lg font-bold">Activation Photos</h3>
+                  <p className="text-xs text-text-s mt-1">
+                    {selectedActivation.firstName} {selectedActivation.surname} • {selectedActivation.userName || 'Unknown employee'}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setSelectedActivation(null)}
+                  className="px-3 py-1.5 rounded border border-border text-xs font-bold uppercase tracking-widest hover:bg-white/5"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <p className="text-[10px] uppercase tracking-widest text-text-s font-bold">Customer Receiving Prize</p>
+                  {selectedActivation.prizePhoto ? (
+                    <img src={selectedActivation.prizePhoto} alt="Prize handover" className="w-full rounded border border-border object-cover" />
+                  ) : (
+                    <div className="h-48 rounded border border-border flex items-center justify-center text-text-s text-xs">No prize photo</div>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <p className="text-[10px] uppercase tracking-widest text-text-s font-bold">Account Summary</p>
+                  {selectedActivation.summaryPhoto ? (
+                    <img src={selectedActivation.summaryPhoto} alt="Account summary" className="w-full rounded border border-border object-cover" />
+                  ) : (
+                    <div className="h-48 rounded border border-border flex items-center justify-center text-text-s text-xs">No account summary photo</div>
+                  )}
+                </div>
               </div>
             </motion.div>
           </div>
